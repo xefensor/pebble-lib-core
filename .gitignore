@@ -1,0 +1,9 @@
+node_modules/
+build/
+.pebble/
+__pycache__/
+*.pyc
+dist/
+
+.lock-waf*
+.waf*

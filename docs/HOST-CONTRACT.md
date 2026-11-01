@@ -3,6 +3,11 @@
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
 
+This contract describes the 0.4.1 library. See the [project README](../README.md)
+for package downloads, [release guide](GITHUB-RELEASES.md) for publishing, and
+[maintainer notes](../AGENTS.md) for validation and change boundaries. A new
+Core release does not change an installed or pinned consumer automatically.
+
 ## Phone side
 
 `require('pebble-watchface-core')` exports:

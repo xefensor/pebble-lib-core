@@ -1,17 +1,98 @@
 # GitHub releases
 
-Versioned packages are published on [Pebble Watchface Core's Releases page](https://github.com/xefensor/pebble-watchface-core/releases). GitHub Actions publishes the exact committed, validated packages and checksums; it does not rebuild them in a different SDK environment.
+[Core 0.4.1](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.4.1)
+is published. The repository's [Releases page](https://github.com/xefensor/pebble-watchface-core/releases)
+contains the versioned downloads; [README.md](../README.md) explains which
+package a consumer needs and [AGENTS.md](../AGENTS.md) records maintainer rules.
 
-The initial version is **v0.4.1**, tagged at the already-tested artifact commit `6a6fb32e5a52d146e60d32fd6ee1b92e67722ada`. Adding release automation does not change the frozen package/source archive or its checksums. The new automation files live on `main` and will be included in future source snapshots.
+Core is a library package, not an app to install on the watch. Publishing it
+does not rebuild or repin Dynamic, Halftone or an installed PBW. Each consumer
+continues to use its committed tarball until deliberately upgraded and released.
 
-## Publishing the next version
+## Current frozen release
 
-1. Bump the package version and update release notes. Prepare and validate the versioned artifacts using the repository's existing packaging steps.
-2. Refresh the checksum file, then commit the version, artifacts and notes to `main`. The **GitHub release** workflow checks the packages and portable tests before publishing.
-3. Keep `.github/release.json` aligned with the exact filenames. Its bootstrap applies only to the initial version above; later versions use their own artifact commit.
+The `v0.4.1` tag points to the already-tested artifact commit
+`6a6fb32e5a52d146e60d32fd6ee1b92e67722ada`. Its assets are:
 
-Each release includes selected current assets and a flat `SHA256SUMS.txt` for downloaded files. Historical files are not uploaded by a broad glob. Published assets and existing tags are never overwritten. A rerun verifies an identical existing release; conflicting bytes, stale packages or a different existing tag target cause failure and require a new version.
+- `pebble-watchface-core-0.4.1.tgz` — the pinned consumer package.
+- `dist.zip` — the compiled Pebble SDK library and exported headers/JavaScript.
+- `SHA256SUMS.txt` — flat filenames for checking downloaded files together.
 
-The workflow can also be rerun from **Actions → GitHub release → Run workflow**. It uses GitHub's built-in token with repository-content write access only in the publication job. No personal access token or external scheduler is required.
+Download the two packages and the checksum attachment into one directory, then
+run `sha256sum -c SHA256SUMS.txt`. The repository's
+[`releases/SHA256SUMS.txt`](../releases/SHA256SUMS.txt) instead records repository
+paths; the workflow validates those inputs and generates the flat attachment.
 
-Core is a library package, not an app to install on the watch. Consumers keep their existing pinned archive until deliberately updated; publishing Core does not rebuild or repin Dynamic or Halftone.
+Adding release automation or editing documentation on `main` does not change
+these published files, their tag or the packaged README. The release's tagged
+source and package contents remain the historical snapshot. Future package
+versions will contain the documentation present when they are built.
+
+## Preparing the next version
+
+1. Make the engine change and its regression tests. Update the package version,
+   lockfile, current README download links and matching `## Version X.Y.Z`
+   release-notes section.
+   Preserve existing version sections as history.
+2. Run the portable engine and release-automation suites:
+
+   ```sh
+   npm ci --ignore-scripts
+   npm test
+   python3 -m unittest discover -s tests -p test_github_release.py
+   ```
+
+3. Build and package with the intended Pebble SDK:
+
+   ```sh
+   pebble build
+   python3 scripts/package-release.py
+   ```
+
+4. Review the versioned tarball, `dist.zip`, checksums and notes, then create a
+   local commit containing them and the version change. Before pushing it, run:
+
+   ```sh
+   python3 scripts/github-release.py prepare --output /tmp/pebble-core-release-check
+   ```
+
+5. Push the checked commit to `main`. A consumer's relevant native/render checks
+   are separate from Core's portable tests.
+
+The `prepare` command validates committed inputs at `HEAD` and writes local
+staging files. It does not check uncommitted package edits. A local staging
+folder is not a release and does not upload anything.
+
+## Automatic publication
+
+The [GitHub release workflow](../.github/workflows/release.yml) runs on relevant
+`main` pushes: package metadata, artifact/checksum directories, release
+configuration, the workflow or its helper/tests. Ordinary README/docs-only
+pushes do not create another release. It can also be run through
+**Actions → GitHub release → Run workflow**, selecting `main`.
+
+The read-only job installs dependencies, runs portable tests and validates the
+selected committed artifacts. The publication job repeats artifact validation,
+creates a draft, uploads and verifies the exact files, then publishes. It uses
+GitHub's built-in token with content-write permission only in that job. No SDK
+rebuild, personal access token or external scheduler is required in Actions.
+
+[`.github/release.json`](../.github/release.json) controls the exact current
+asset paths, tag prefix, prerelease flag and README notes heading. Templates
+select only the package version being released, never all historical artifacts
+with a broad glob. Its bootstrap identifies the original existing 0.4.1 commit;
+new versions use their own artifact commit.
+
+## Reruns and failures
+
+A rerun verifies an identical existing release rather than uploading it again.
+Published assets and tags are never overwritten by the workflow. Changed package
+bytes require a new version. An incomplete matching draft can resume; a
+conflicting existing tag, wrong release state, unexpected asset or changed hash
+fails instead of being silently replaced.
+
+The checks cover archive integrity, versions/checksums, selected package/source
+identity, SDK exported headers/JavaScript, and immutable publication behavior.
+They do not prove a new binary's physical behavior or substitute for building
+and checking packages before committing them. Validation results should retain
+their actual portable, emulator, consumer or device scope.

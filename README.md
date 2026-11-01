@@ -1,14 +1,41 @@
 # Pebble Watchface Core
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.4.1 adds
-content-aware notification deadlines, app-only privacy and transient event/playback
-metadata while preserving precise reading identity and honest expiry states.
-It targets Emery (Pebble Time 2).
+and [Dynamic](https://github.com/xefensor/dynamic-watchface). The current release,
+**0.4.1**, provides two selected readings and transient music, notification and
+phone context for Emery (Pebble Time 2). It preserves precise reading identity,
+expiry and privacy; 0.4.1 fixes clearing of fully redacted or newly filtered
+active and queued notifications.
 
 The package is compiled into each watchface's PBW. Users install a watchface;
 there is no separate core app or background service to install. A core update
 reaches users when a consuming watchface is rebuilt and released.
+
+## Download and release status
+
+[Core 0.4.1 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.4.1)
+is published with these verified assets:
+
+| Download | Use |
+| --- | --- |
+| [pebble-watchface-core-0.4.1.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/pebble-watchface-core-0.4.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
+| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
+| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
+
+Download both packages and the checksum file into one directory, then run
+`sha256sum -c SHA256SUMS.txt`. The release tag identifies the
+[frozen 0.4.1 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.4.1).
+Later documentation and automation updates on `main` do not replace those files.
+
+GitHub Actions publishes future packaged versions after their tests and artifact
+checks pass. It uploads the committed files rather than rebuilding them with a
+different SDK. See [the release guide](docs/GITHUB-RELEASES.md) for the packaging,
+trigger and rerun rules, and [AGENTS.md](AGENTS.md) for maintainer instructions.
+
+Publishing Core does **not** update installed watchfaces or their dependencies.
+Dynamic currently pins 0.4.1; Halftone retains 0.1.0. Each consumer is upgraded,
+built, visually checked and released independently. Core is not a separate
+watch app, a background service or an appstore submission.
 
 ## Shared responsibilities
 
@@ -96,10 +123,6 @@ availability and permissions remain the Pebble phone app's responsibility.
 - Notification bursts are bounded to eight seconds; baseline/session privacy and
   five-second paused-music grace are retained.
 
-Dynamic adopts 0.4.1 independently. Halftone continues to bundle 0.1.0
-until it is rebuilt against a separately checked upgrade. No installed
-watchface is changed by updating this repository.
-
 ## Use from a watchface
 
 Consumers pin an independently selected release tarball, such as
@@ -136,7 +159,9 @@ suites and a C99 compiler for the native suites. Run these commands from a
 checkout of this repository; consumers install the built package instead.
 
 ```sh
+npm ci --ignore-scripts
 npm test
+python3 -m unittest discover -s tests -p test_github_release.py
 pebble build
 python3 scripts/package-release.py
 ```
@@ -144,23 +169,37 @@ python3 scripts/package-release.py
 `pebble build` creates the package's `dist.zip`, containing native code, exported
 headers and phone JavaScript. `npm pack` wraps the release package as a versioned
 `.tgz`; it does not publish to npm. The release script normalizes SDK ZIP
-metadata, writes that tarball to `releases/` and records SHA-256 checksums. `npm test` runs both JavaScript and portable
-C suites; `npm run test:native` runs just the latter. Neither needs a watch or
-Pebble emulator. Consumer build and rendering results
-belong to each watchface's validation record. The initial extraction passed
-83 JavaScript tests and three portable C suites; consumer rendering is checked
-separately.
+metadata, writes that tarball to `releases/` and records repository-path SHA-256
+checksums. The GitHub release workflow produces a separate flat checksum
+attachment for downloaded files.
 
-## Updating both watchfaces
+`npm test` runs JavaScript and portable C suites; `npm run test:native` runs only
+the C suites. These checks need neither the Pebble SDK nor an emulator. The
+release automation tests use a temporary repository and fake GitHub service;
+they do not publish anything. The 0.4.1 engine passed **126 JavaScript tests and
+three native C suites**. The later release-automation pass added **18 passing
+release tests**. These counts describe those checks, not physical-device or
+live-provider coverage. Rendering, permissions and real-device results belong
+to each consuming watchface's validation record.
 
-1. Change the core and run its portable suites, then build the Pebble package.
-2. Bump the core version for a new release and create its tarball.
-3. Copy that exact tarball into each consumer's `vendor/` directory. Update its
-   file dependency, lockfile and `vendor/CORE.json` provenance together.
-4. Build and check each consumer. Shared behavior tests cover the engine;
-   separate native screenshots check that each layout still fits.
-5. Release the new PBWs independently. Existing installed PBWs keep their
-   bundled core until the user installs an updated watchface.
+## Releasing Core and updating consumers
+
+1. Make the engine change and add regression coverage for the behavior or
+   contract it changes. Bump the Core version and update its release notes.
+2. Run the portable suites, build with the Pebble SDK and package the exact
+   `dist.zip` and versioned tarball.
+3. Commit the version, checked artifacts, checksums and notes locally, then
+   validate committed `HEAD` with the release helper as described in
+   [the release guide](docs/GITHUB-RELEASES.md). Push the checked commit to `main`;
+   GitHub Actions tests and publishes that version automatically. Existing
+   published assets and tags are preserved; changed package bytes need a new
+   version. Documentation-only updates do not repack a published release.
+4. For each consumer being upgraded, copy the selected tarball into `vendor/`.
+   Update its file dependency, lockfile and `vendor/CORE.json` provenance
+   together. Leave other consumers on their existing pin.
+5. Build and check that consumer, including its native layout and relevant
+   lifecycle/privacy cases, then release its PBW independently. Shared engine
+   tests do not establish consumer render or hardware results.
 
 For local iteration, Pebble also supports installing a built package from its
 local directory. The committed tarball is the reproducible dependency used for

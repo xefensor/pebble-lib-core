@@ -83,7 +83,7 @@ static void seal(uint8_t *bytes, size_t length) {
 }
 static size_t maximum_packet(uint8_t *bytes) {
   memset(bytes, 0, COMPLICATION_MAX_BYTES);
-  bytes[0] = 3;
+  bytes[0] = 4;
   size_t at = COMPLICATION_HEADER_BYTES;
   for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
     uint8_t *record = bytes + at;
@@ -96,10 +96,10 @@ static size_t maximum_packet(uint8_t *bytes) {
     put16(record + 14, COMPLICATION_MAX_BITMAP_BYTES);
     record[20] = COMPLICATION_SEMANTIC_TEMPERATURE; record[24] = COMPLICATION_SOURCE_WEATHER;
     record[22] = 16; record[23] = 24;
-    memset(record + 52, 'X', COMPLICATION_MAX_TEXT_BYTES);
-    memset(record + 52 + COMPLICATION_MAX_TEXT_BYTES, 'u', 16);
-    memset(record + 52 + COMPLICATION_MAX_TEXT_BYTES + 16, 'L', 24);
-    record[52 + COMPLICATION_MAX_TEXT_BYTES + 40] = 0xc0;
+    memset(record + COMPLICATION_RECORD_HEADER_BYTES, 'X', COMPLICATION_MAX_TEXT_BYTES);
+    memset(record + COMPLICATION_RECORD_HEADER_BYTES + COMPLICATION_MAX_TEXT_BYTES, 'u', 16);
+    memset(record + COMPLICATION_RECORD_HEADER_BYTES + COMPLICATION_MAX_TEXT_BYTES + 16, 'L', 24);
+    record[COMPLICATION_RECORD_HEADER_BYTES + COMPLICATION_MAX_TEXT_BYTES + 40] = 0xc0;
     at += COMPLICATION_MAX_SLOT_BYTES;
   }
   assert(at == COMPLICATION_MAX_BYTES);
@@ -301,6 +301,35 @@ int main(void) {
   assert(strcmp(reopened.complications.slots[0].text,"5°C") == 0);
   assert(reopened.complications.slots[0].confirmed_at == v3now && reopened.complications.slots[0].valid_until == v3now+1800);
 
+  // V4 retains public slot identity through expiry/denial, and does not
+  // confuse the provider observation with the current transport receipt.
+  reset_store(&store);
+  length=fixture("complications-v4",bytes);
+  assert(wfc_receive_complications(&state,bytes,length,v3now));
+  wfc_init(&reopened,&config,true,0);
+  assert(wfc_load_cache(&reopened,v3now+1));
+  assert(reopened.complications.slots[0].detail==COMPLICATION_DETAIL_FEELS_LIKE);
+  assert(reopened.complications.slots[0].observed_at==v3now-300);
+  assert(reopened.complications.slots[0].confirmed_at==v3now&&reopened.complications.slots[0].cached);
+  assert(reopened.complications.slots[1].status==COMPLICATION_STATUS_EXPIRED);
+  assert(strcmp(reopened.complications.slots[1].label,"Humidity")==0);
+  assert(reopened.complications.slots[1].flags==0&&!reopened.complications.slots[1].cached);
+  assert(reopened.complications.slots[1].text[0]==0&&reopened.complications.slots[1].observed_at==0);
+  assert(reopened.complications.slots[2].status==COMPLICATION_STATUS_DENIED);
+  assert(reopened.complications.slots[2].detail==COMPLICATION_DETAIL_PHONE_BATTERY);
+  assert(strcmp(reopened.complications.slots[2].label,"Phone battery")==0);
+
+  reset_store(&store);
+  length=fixture("image-only-v4",bytes);
+  assert(wfc_receive_complications(&state,bytes,length,v3now));
+  assert(state.complications.slots[0].pixel_bytes==800);
+  wfc_init(&reopened,&config,true,0);
+  assert(wfc_load_cache(&reopened,v3now+1));
+  assert(reopened.complications.slots[0].status==COMPLICATION_STATUS_UNAVAILABLE);
+  assert(reopened.complications.slots[0].flags==0&&!reopened.complications.slots[0].cached);
+  assert(reopened.complications.slots[0].detail==COMPLICATION_DETAIL_CONDITION);
+  assert(strcmp(reopened.complications.slots[0].label,"Conditions")==0);
+
   // Image-only cached readings become explicitly unavailable; no fabricated
   // value/semantic-only READY record survives bitmap removal.
   reset_store(&store);
@@ -319,9 +348,9 @@ int main(void) {
   length=maximum_packet(bytes);
   const size_t private_at=6+COMPLICATION_MAX_SLOT_BYTES;
   bytes[private_at+24]=COMPLICATION_SOURCE_MUSIC;
-  memcpy(bytes+private_at+52,"PRIVATE-MUSIC-CONTENT",21);
+  memcpy(bytes+private_at+COMPLICATION_RECORD_HEADER_BYTES,"PRIVATE-MUSIC-CONTENT",21);
   bytes[6+2*COMPLICATION_MAX_SLOT_BYTES+24]=COMPLICATION_SOURCE_NOTIFICATION;
-  memcpy(bytes+6+2*COMPLICATION_MAX_SLOT_BYTES+52,"PRIVATE-NOTICE-CONTENT",22);
+  memcpy(bytes+6+2*COMPLICATION_MAX_SLOT_BYTES+COMPLICATION_RECORD_HEADER_BYTES,"PRIVATE-NOTICE-CONTENT",22);
   seal(bytes,length);
   assert(wfc_receive_complications(&state,bytes,length,NOW));
   assert(state.complications.slots[1].flags != 0); // Live display remains available.

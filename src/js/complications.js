@@ -1,8 +1,8 @@
 'use strict';
 
 var wire = require('./complication-data');
-var STATUS = {EMPTY:0, LOADING:1, READY:2, UNAVAILABLE:3, DENIED:4, UNSUPPORTED:5, DISABLED:6};
-var NAMES = ['empty','loading','ready','unavailable','denied','unsupported','disabled'];
+var STATUS = {EMPTY:0, LOADING:1, READY:2, UNAVAILABLE:3, DENIED:4, UNSUPPORTED:5, DISABLED:6, EXPIRED:7};
+var NAMES = ['empty','loading','ready','unavailable','denied','unsupported','disabled','expired'];
 var DEFAULT_CACHE_KEY = 'watchface-core-complications-v1';
 var REFRESH = 30 * 60000;
 var MAX_AGE = 7200;
@@ -107,8 +107,8 @@ function utf8Size(text) {
   return length;
 }
 function semanticOf(slot,property,value) {
-  var kind=wire.SEMANTIC_KIND, source=wire.SOURCE_KIND;
-  var result={kind:kind.GENERIC,source:source.OTHER,label:labelOf(slot)};
+  var kind=wire.SEMANTIC_KIND, source=wire.SOURCE_KIND, detail=wire.DETAIL_KIND;
+  var result={kind:kind.GENERIC,source:source.OTHER,label:labelOf(slot),detail:detail.NONE,qualifiers:0};
   var weather=slot.category === 'weather' && slot.item === 'location';
   if (weather) { result.source=source.WEATHER; }
   else if (slot.category === 'phone') { result.source=source.PHONE; }
@@ -131,20 +131,37 @@ function semanticOf(slot,property,value) {
     result.kind=kind.BOOLEAN; result.value=value.booleanValue ? 1 : 0;
   } else if (Number.isInteger(value.timestamp)) { result.kind=kind.TIMESTAMP; }
   if (weather) {
+    var details={temperature:detail.TEMPERATURE,feels_like:detail.FEELS_LIKE,high:detail.HIGH,low:detail.LOW,
+      humidity:detail.HUMIDITY,wind_speed:detail.WIND_SPEED,
+      wind_direction:detail.WIND_DIRECTION,uv_index:detail.UV,condition:detail.CONDITION,condition_code:detail.CONDITION};
+    result.detail=details[slot.property] || detail.NONE;
     if (['temperature','feels_like','high','low'].indexOf(slot.property)>=0) { result.kind=kind.TEMPERATURE; }
-    else if (slot.property === 'precipitation' && precipitationStyle(slot,property,value)) { result.kind=kind.PRECIPITATION; }
+    else if (slot.property === 'precipitation' && precipitationStyle(slot,property,value)) {
+      result.kind=kind.PRECIPITATION; result.detail=detail.PRECIPITATION;
+    }
     else if (slot.property === 'humidity') { result.kind=kind.HUMIDITY; }
     else if (['wind_speed','wind_direction'].indexOf(slot.property)>=0) { result.kind=kind.WIND; }
     else if (slot.property === 'uv_index') { result.kind=kind.UV; }
     else if (slot.property === 'condition' || slot.property === 'condition_code') { result.kind=kind.CONDITION; }
   } else if (slot.category === 'phone' && slot.item === 'phone_state' && slot.property === 'battery_level') {
-    result.kind=kind.BATTERY;
+    result.kind=kind.BATTERY; result.detail=detail.PHONE_BATTERY;
   }
+  return result;
+}
+// Missing values retain only a configured public identity. Do not keep a
+// private label, value, image or measurement time merely to explain a failure.
+function publicIdentity(slot,semantic) {
+  if (!slot || slot.invalid || privateDescriptor(slot) || privateRecord({semantic:semantic})) { return null; }
+  var value=semantic || semanticOf(slot,null,{});
+  var result={kind:value.kind,source:value.source,detail:value.detail || 0,
+    qualifiers:value.qualifiers || 0,label:labelOf(slot)};
+  if (typeof value.unit === 'string') { result.unit=value.unit; }
   return result;
 }
 function observationProperties(slot) {
   if (slot.category !== 'weather' || slot.item !== 'location') { return []; }
   if (slot.property === 'temperature') { return ['observed_at','is_forecast']; }
+  if (['feels_like','high','low'].indexOf(slot.property)>=0) { return ['is_forecast']; }
   if (slot.property === 'humidity') { return ['humidity_observed_at']; }
   if (slot.property === 'wind_speed' || slot.property === 'wind_direction') { return ['wind_observed_at']; }
   return [];
@@ -166,6 +183,12 @@ function privateDescriptor(slot) {
 function privateRecord(record) {
   return record && record.semantic && (record.semantic.source === wire.SOURCE_KIND.MUSIC ||
     record.semantic.source === wire.SOURCE_KIND.NOTIFICATION);
+}
+function persistentSignature(slots,prefix) {
+  return (prefix === undefined ? 'two:' : prefix)+JSON.stringify(slots.map(function(slot) {
+    if (!privateDescriptor(slot) || !slot.label) { return slot; }
+    var copy=Object.assign({},slot); delete copy.label; return copy;
+  }));
 }
 
 // A percentage alone is not evidence of rain. Only Pebble's standard weather
@@ -195,6 +218,7 @@ module.exports = function(options) {
   var pebble = options.pebble || {};
   var descriptors = [null,null];
   var records = [null,null];
+  var identities = [null,null];
   var states = [0,0];
   var errors = ['',''];
   var messages = ['',''];
@@ -227,7 +251,7 @@ module.exports = function(options) {
     var cacheable=records.map(function(record,i) {
       return privateDescriptor(descriptors[i]) || privateRecord(record) ? null : record;
     });
-    try { options.storage.setItem(cacheKey, JSON.stringify({signature:signature, records:cacheable})); } catch (ignored) {}
+    try { options.storage.setItem(cacheKey, JSON.stringify({signature:persistentSignature(descriptors), records:cacheable})); } catch (ignored) {}
   }
   function sanitizeStoredCache() {
     try {
@@ -246,17 +270,35 @@ module.exports = function(options) {
         }
         return record;
       });
-      if (changed) { options.storage.setItem(cacheKey,JSON.stringify({signature:cached.signature,records:safe})); }
+      var safeSignature=Array.isArray(choices) ? persistentSignature(choices,encoded.indexOf('two:') === 0 ? 'two:' : '') : cached.signature;
+      if (safeSignature !== cached.signature) { changed=true; }
+      if (changed) { options.storage.setItem(cacheKey,JSON.stringify({signature:safeSignature,records:safe})); }
     } catch (ignored) {}
   }
   function load() {
     try {
       var cached = JSON.parse(options.storage.getItem(cacheKey));
-      if (!cached || cached.signature !== signature || !Array.isArray(cached.records) || cached.records.length !== VISIBLE_SLOTS) { return; }
+      if (!cached || cached.signature !== persistentSignature(descriptors) || !Array.isArray(cached.records) || cached.records.length !== VISIBLE_SLOTS) { return; }
       cached.records.forEach(function(record, i) {
         if (descriptors[i] && !descriptors[i].invalid && !privateDescriptor(descriptors[i]) && !privateRecord(record) && valid(record) &&
             wire.packComplications([rendered(record)], now())[7] === STATUS.READY) {
+          // Old public caches retain their original values/times, while the
+          // current descriptor can supply newly introduced meaning metadata.
+          var identified=semanticOf(descriptors[i],null,{});
+          record.semantic=Object.assign({},identified,record.semantic || {});
+          record.semantic.source=identified.source;
+          record.semantic.detail=identified.detail;
+          if (identified.kind !== wire.SEMANTIC_KIND.GENERIC) { record.semantic.kind=identified.kind; }
+          if (descriptors[i].category === 'weather' && descriptors[i].item === 'location' &&
+              descriptors[i].property === 'precipitation' && record.semantic.kind === wire.SEMANTIC_KIND.PRECIPITATION) {
+            record.semantic.detail=wire.DETAIL_KIND.PRECIPITATION;
+          }
+          if (!(record.semantic.qualifiers & wire.QUALIFIERS.FORECAST) && Number.isInteger(record.observedAt) &&
+              record.observedAt>0 && record.observedAt<=record.confirmedAt) {
+            record.semantic.observedAt=record.observedAt;
+          }
           records[i] = record; states[i] = STATUS.READY;
+          identities[i]=publicIdentity(descriptors[i],record.semantic);
           fromCache[i]=true;
         }
       });
@@ -330,8 +372,10 @@ module.exports = function(options) {
     if (!hasPreferences && available) { return; }
     var slots = records.map(function(record, i) {
       if (valid(record)) { return rendered(record); }
-      if (record) { records[i] = null; states[i] = STATUS.UNAVAILABLE; errors[i] = 'SOURCE_EXPIRED'; messages[i] = ''; }
-      return {status:states[i]};
+      if (record) { records[i] = null; states[i] = STATUS.EXPIRED; errors[i] = 'SOURCE_EXPIRED'; messages[i] = ''; }
+      var missing={status:states[i]};
+      if (states[i] !== STATUS.EMPTY && identities[i]) { missing.semantic=identities[i]; }
+      return missing;
     });
     var payload = {};
     payload[options.keys.COMPLICATION_DATA] = wire.packComplications(slots, now());
@@ -361,7 +405,7 @@ module.exports = function(options) {
     group.slots.forEach(function(i) {
       errors[i] = code;
       messages[i] = messageOf(error);
-      if (terminal || !valid(records[i])) { records[i] = null; states[i] = status; }
+      if (terminal || !valid(records[i])) { records[i] = null; states[i] = status; fromCache[i]=false; }
     });
     publish(); save(); scheduleExpiry(); scheduleRecovery();
   }
@@ -410,6 +454,14 @@ module.exports = function(options) {
                   parsed.value.displayKind = precipitationStyle(slot, property, parsed.value);
                   parsed.value.semantic=semanticOf(slot,property,parsed.value);
                   parsed.value.observedAt=observedAt(slot,instance,confirmedAt);
+                  if (parsed.value.semantic.kind === wire.SEMANTIC_KIND.TEMPERATURE &&
+                      object(instance.properties.is_forecast) && object(instance.properties.is_forecast.boolean) &&
+                      instance.properties.is_forecast.boolean.value === true) {
+                    parsed.value.semantic.qualifiers=wire.QUALIFIERS.FORECAST;
+                    parsed.value.observedAt=null;
+                  }
+                  if (parsed.value.observedAt !== null) { parsed.value.semantic.observedAt=parsed.value.observedAt; }
+                  identities[i]=publicIdentity(slot,parsed.value.semantic);
                 }
                 states[i] = parsed.status; errors[i] = parsed.error || '';
                 fromCache[i]=false;
@@ -449,6 +501,7 @@ module.exports = function(options) {
     cancelRecovery(); closeSources(); cancelDelivery();
     descriptors = next; signature = nextSignature; hasPreferences = true;
     records = [null,null];
+    identities=descriptors.map(function(slot) { return publicIdentity(slot); });
     fromCache = [false,false];
     states = descriptors.map(function(slot) { return !slot ? STATUS.EMPTY : slot.invalid ? STATUS.UNSUPPORTED : STATUS.LOADING; });
     errors = descriptors.map(function(slot) { return slot && slot.invalid ? 'INVALID_PREFERENCE' : ''; });
@@ -516,6 +569,6 @@ module.exports = function(options) {
         text:safe && valid(record) && typeof record.text === 'string' ? record.text : null,
         receivedAt:received,receivedAgeSec:received === null ? null : Math.max(0,now()-received),
         observedAt:observed,observationAgeSec:observed === null ? null : now()-observed,cached:!!fromCache[i],
-        status:NAMES[record && !valid(record) ? STATUS.UNAVAILABLE : states[i]],error:errors[i],message:messages[i]}; })};
+        status:NAMES[record && !valid(record) ? STATUS.EXPIRED : states[i]],error:errors[i],message:messages[i]}; })};
   }};
 };

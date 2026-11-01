@@ -30,9 +30,22 @@ test('V3 golden packets anchor the JavaScript encoder and independent native dec
   const v3=require('./fixtures/protocol-v3.json');
   for(const value of v3.cases) {
     const expected=Buffer.from(value.hex,'hex');
-    assert.deepEqual(Buffer.from(api.wire.packComplications(value.records,v3.now)),expected,value.name);
+    assert.deepEqual(Buffer.from(api.wire.packComplications(value.records,v3.now,3)),expected,value.name);
     assert.deepEqual(fs.readFileSync(path.join(__dirname,'fixtures',value.name+'.bin')),expected);
     assert.equal(expected[0],3);assert.equal(expected.readUInt16LE(2),expected.length);
   }
   assert.equal(Buffer.from(v3.cases[2].hex,'hex').length,5186);
+});
+
+test('V4 golden packets preserve reading identity and notification app/title boundaries',()=>{
+  const v4=require('./fixtures/protocol-v4.json');
+  for(const value of v4.cases) {
+    const expected=Buffer.from(value.hex,'hex');
+    assert.deepEqual(Buffer.from(api.wire.packComplications(value.records,v4.now)),expected,value.name);
+    assert.deepEqual(fs.readFileSync(path.join(__dirname,'fixtures',value.name+'.bin')),expected);
+    assert.equal(expected[0],4);assert.equal(expected.readUInt16LE(2),expected.length);
+  }
+  assert.equal(Buffer.from(v4.cases[2].hex,'hex').length,5206);
+  assert.equal(api.wire.DETAIL_KIND.FEELS_LIKE,2);
+  assert.equal(api.wire.QUALIFIERS.FORECAST,1);
 });

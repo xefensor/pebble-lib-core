@@ -6,6 +6,7 @@ var SOURCE = wire.SOURCE_KIND;
 var LEASE = 120;
 var NOTICE_LIFE = 8;
 var NOTICE_QUIET = 3;
+var NOTICE_STABLE_MS = 900;
 var PAUSED_GRACE = 5;
 var HEARTBEAT = 60000;
 var MAX_EPOCH = 4294967295;
@@ -119,6 +120,7 @@ module.exports = function createContext(options) {
   var notificationIds=Object.create(null);
   var activeNotice=null;
   var noticeWindowEnd=0, lastNoticeAt=0;
+  var noticeShownAt=0, pendingNotice=null, noticeUpdateTimer=null;
   var markerNeeded=false, baselineGeneration=0, baselineToken=null;
   var heartbeat=null, expiryTimer=null;
   var pending=false, sending=false, deliveryTimer=null, deliveryGeneration=0;
@@ -155,6 +157,8 @@ module.exports = function createContext(options) {
   function clearNotice() {
     records[2]=records[3]=null;
     activeNotice=null;
+    pendingNotice=null; noticeShownAt=0;
+    if (noticeUpdateTimer !== null) { options.cancelLater(noticeUpdateTimer); noticeUpdateTimer=null; }
   }
   function clearGroup(name) {
     if (name === 'music') { records[0]=records[1]=null; playing=false; pausedUntil=0; }
@@ -287,7 +291,7 @@ module.exports = function createContext(options) {
     else { valid=notificationData(envelope); }
     if (valid === false) { sourceError(name,{code:'INVALID_DATA'}); return; }
     groups[name].receivedAt=now();
-    publish();
+    if (valid !== 'deferred') { publish(); }
   }
   function musicData(envelope) {
     if (!envelope.instances.length) { clearGroup('music'); return; }
@@ -317,18 +321,28 @@ module.exports = function createContext(options) {
         numeric.unit !== undefined && numeric.unit !== '%') || !end) { return false; }
     records[4]=finite(level) && level>=0 && level<=15 &&
       (numeric.unit === undefined || numeric.unit === '%') && end ? record(Math.round(level)+'%',null,end,
-        {kind:KIND.BATTERY,source:SOURCE.PHONE,value:level,min:0,max:100,unit:'%'}) : null;
+        {kind:KIND.BATTERY,source:SOURCE.PHONE,detail:wire.DETAIL_KIND.PHONE_BATTERY,value:level,min:0,max:100,unit:'%'}) : null;
   }
   function notificationData(envelope) {
-    var incoming=Object.create(null), candidates=[];
+    var incoming=Object.create(null), candidates=[], activeInstance=null, deferred=false;
     envelope.instances.forEach(function(instance) {
       var id=keyOf(instance);
       if (id === null || incoming[id]) { return; }
       incoming[id]=object(instance.properties) ? fingerprintOf(instance) : 'invalid';
+      if (id === activeNotice) { activeInstance=instance; }
       if (baseline && notificationIds[id] !== incoming[id] && object(instance.properties)) { candidates.push(instance); }
     });
     if (envelope.instances.length && !Object.keys(incoming).length) { return false; }
     if (activeNotice && !incoming[activeNotice]) { clearNotice(); }
+    if (pendingNotice && !incoming[pendingNotice.id]) {
+      pendingNotice=null;
+      if (noticeUpdateTimer !== null) { options.cancelLater(noticeUpdateTimer); noticeUpdateTimer=null; }
+    }
+    // Late artwork is not a new notice and must not renew its original lease.
+    if (activeInstance && fresh(records[2]) && notificationIds[activeNotice] === incoming[activeNotice]) {
+      var refreshedIcon=pictureOf(activeInstance.properties.app_icon,24);
+      if (refreshedIcon) { records[2].bitmap=refreshedIcon; }
+    }
     // First delivery is a snapshot of the existing phone shade, not a new
     // notification. Reconnects, errors and settings changes establish it again.
     notificationIds=incoming;
@@ -341,8 +355,8 @@ module.exports = function createContext(options) {
       var allowed=!settings.notificationApps.length || settings.notificationApps.indexOf(app.trim().toLowerCase())>=0 ||
         settings.notificationApps.indexOf(packageName.trim().toLowerCase())>=0;
       if (!allowed) { continue; }
-      var title=clean(textOf(p.name)), appTitle=clean(app);
-      var heading=appTitle && title && appTitle !== title ? appTitle+' · '+title : title || appTitle;
+      var title=clean(textOf(p.name)), appTitle=wire.normalizeText(clean(app),24);
+      var heading=title || clean(app);
       if (!heading) { continue; }
       var received=now();
       if (received>=noticeWindowEnd) {
@@ -355,11 +369,32 @@ module.exports = function createContext(options) {
         noticeWindowEnd=end;
       } else { lastNoticeAt=received; }
       end=Math.min(end,noticeWindowEnd);
-      records[2]=record(heading,pictureOf(p.app_icon,24),end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION});
-      records[3]=settings.notificationPreview ? record(textOf(p.body),null,end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION}) : null;
-      activeNotice=keyOf(instance);
+      var next={id:keyOf(instance),title:record(heading,pictureOf(p.app_icon,24),end,
+        {kind:KIND.GENERIC,source:SOURCE.NOTIFICATION,label:appTitle}),
+        body:settings.notificationPreview ? record(textOf(p.body),null,end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION}) : null};
+      // A stable reading interval must never postpone a source redaction.
+      var removesPrivateText=fresh(records[3]) && !next.body ||
+        !title && fresh(records[2]) && records[2].text !== heading;
+      if (!removesPrivateText && fresh(records[2]) && options.now()<noticeShownAt+NOTICE_STABLE_MS) {
+        pendingNotice=next; deferred=true;
+        if (noticeUpdateTimer === null) {
+          noticeUpdateTimer=options.later(function() {
+            noticeUpdateTimer=null;
+            var pending=pendingNotice; pendingNotice=null;
+            if (!pending || stopped || !connected || !baseline || !enabled('notifications') || !fresh(pending.title)) { return; }
+            records[2]=pending.title; records[3]=pending.body; activeNotice=pending.id;
+            noticeShownAt=options.now(); publish();
+          },Math.max(1,noticeShownAt+NOTICE_STABLE_MS-options.now()));
+        }
+      } else {
+        if (noticeUpdateTimer !== null) { options.cancelLater(noticeUpdateTimer); noticeUpdateTimer=null; }
+        pendingNotice=null;
+        records[2]=next.title; records[3]=next.body; activeNotice=next.id;
+        noticeShownAt=options.now();
+      }
       break; // The native source orders instances newest first.
     }
+    return deferred ? 'deferred' : undefined;
   }
   function close(name) {
     var group=groups[name];

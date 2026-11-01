@@ -1,9 +1,12 @@
 'use strict';
 
-var VERSION = 3;
-var HEADER_BYTES = 52;
+var VERSION = 4;
+var HEADER_BYTES = 56;
 var SEMANTIC_KIND = {GENERIC:0,TEMPERATURE:1,PRECIPITATION:2,BATTERY:3,HUMIDITY:4,WIND:5,UV:6,CONDITION:7,RANGE:8,NUMBER:9,BOOLEAN:10,TIMESTAMP:11};
 var SOURCE_KIND = {GENERIC:0,WEATHER:1,PHONE:2,MUSIC:3,NOTIFICATION:4,OTHER:5};
+var DETAIL_KIND = {NONE:0,TEMPERATURE:1,FEELS_LIKE:2,HIGH:3,LOW:4,PRECIPITATION:5,HUMIDITY:6,WIND_SPEED:7,WIND_DIRECTION:8,UV:9,CONDITION:10,PHONE_BATTERY:11};
+var QUALIFIERS = {FORECAST:1};
+var DETAIL_SEMANTIC = [0,1,1,1,1,2,4,5,5,6,7,3];
 var SLOT_COUNT = 5;
 var TEXT = 1;
 var BITMAP = 2;
@@ -13,6 +16,7 @@ var EMPTY = 0;
 var READY = 2;
 var UNAVAILABLE = 3;
 var UNSUPPORTED = 5;
+var EXPIRED = 7;
 var MAX_EPOCH = 4294967295;
 var MAX_AGE = 7200;
 var MAX_TEXT_BYTES = 128;
@@ -134,16 +138,27 @@ function f64(out, at, value) {
   view.setFloat64(0, value, true);
   for (var i = 0; i < 8; ++i) { out[at + i] = view.getUint8(i); }
 }
-function semanticOf(slot) {
+function semanticOf(slot, version, identityOnly) {
   var value = slot.semantic;
   if (!object(value)) { return null; }
   var kind = value.kind === undefined ? 0 : value.kind;
   var source = value.source === undefined ? 0 : value.source;
   if (!integer(kind, 0, 11) || !integer(source, 0, 5)) { return null; }
-  var result = {kind:kind,source:source,flags:0,unit:[],label:[]};
+  var result = {kind:kind,source:source,flags:0,unit:[],label:[],detail:0,qualifiers:0,observedAt:0};
+  if (version === 4) {
+    var detail = value.detail === undefined ? 0 : value.detail;
+    var qualifiers = value.qualifiers === undefined ? 0 : value.qualifiers;
+    var observedAt = identityOnly || value.observedAt === undefined ? 0 : value.observedAt;
+    if (!integer(detail,0,11) || detail && DETAIL_SEMANTIC[detail] !== kind &&
+        !(detail === DETAIL_KIND.PRECIPITATION && (kind === SEMANTIC_KIND.GENERIC || kind === SEMANTIC_KIND.NUMBER)) ||
+        !integer(qualifiers,0,1) || qualifiers && source !== SOURCE_KIND.WEATHER ||
+        !integer(observedAt,0,MAX_EPOCH) || observedAt &&
+          (observedAt > slot.confirmedAt || qualifiers & QUALIFIERS.FORECAST)) { return null; }
+    result.detail=detail; result.qualifiers=qualifiers; result.observedAt=observedAt;
+  }
   var fields = ['value','min','max'];
   for (var i = 0; i < fields.length; ++i) {
-    if (value[fields[i]] !== undefined) {
+    if (!identityOnly && value[fields[i]] !== undefined) {
       var numeric = value[fields[i]];
       if (typeof numeric !== 'number' || !isFinite(numeric)) { return null; }
       result[fields[i]] = numeric; result.flags |= 1 << i;
@@ -163,18 +178,28 @@ function semanticOf(slot) {
   return result;
 }
 
+function unavailableRecord(slot,status,version,header) {
+  if (version !== 4 || status === EMPTY) { return statusRecord(status === EXPIRED ? UNAVAILABLE : status,header); }
+  var metadata=semanticOf(slot,version,true), out=statusRecord(status,header);
+  // Identity may survive a public source failure, but private source names,
+  // old content, numbers and observation times never survive this path.
+  if (!metadata || metadata.source === SOURCE_KIND.MUSIC || metadata.source === SOURCE_KIND.NOTIFICATION) { return out; }
+  out[20]=metadata.kind; out[22]=metadata.unit.length; out[23]=metadata.label.length;
+  out[24]=metadata.source; out[25]=metadata.detail; out[26]=metadata.qualifiers;
+  return out.concat(metadata.unit,metadata.label);
+}
 function record(slot, nowSec, version) {
-  var header = version === 3 ? HEADER_BYTES : 20;
+  var header = version === 4 ? HEADER_BYTES : version === 3 ? 52 : 20;
   if (slot === undefined || slot === null) { return statusRecord(EMPTY,header); }
-  if (!object(slot) || !integer(slot.status, 0, 6)) { return statusRecord(UNSUPPORTED,header); }
-  if (slot.status !== READY) { return statusRecord(slot.status,header); }
+  if (!object(slot) || !integer(slot.status, 0, 7)) { return statusRecord(UNSUPPORTED,header); }
+  if (slot.status !== READY) { return unavailableRecord(slot,slot.status,version,header); }
   if (!integer(nowSec, 1, MAX_EPOCH) || !integer(slot.confirmedAt, 1, MAX_EPOCH) ||
       !integer(slot.validUntil, 1, MAX_EPOCH) || slot.confirmedAt > nowSec) { return statusRecord(UNAVAILABLE,header); }
   var until = Math.min(slot.validUntil, slot.confirmedAt + MAX_AGE, MAX_EPOCH);
-  if (nowSec >= until) { return statusRecord(UNAVAILABLE,header); }
-  var text = utf8(normalizeText(slot.text,version === 3 ? 128 : 48));
+  if (nowSec >= until) { return unavailableRecord(slot,version === 4 ? EXPIRED : UNAVAILABLE,version,header); }
+  var text = utf8(normalizeText(slot.text,version >= 3 ? 128 : 48));
   var event = !text.length && integer(slot.timestamp, 1, MAX_EPOCH) ? slot.timestamp : null;
-  var bitmap = bitmapOf(slot.bitmap,version === 3 ? 40 : 24);
+  var bitmap = bitmapOf(slot.bitmap,version >= 3 ? 40 : 24);
   var flags = (text.length ? TEXT : event !== null ? TIMESTAMP : 0) |
     (bitmap ? BITMAP | (bitmap.image ? IMAGE : 0) : 0);
   if (!flags) { return statusRecord(slot.timestamp === 0 ? UNAVAILABLE : UNSUPPORTED,header); }
@@ -190,10 +215,13 @@ function record(slot, nowSec, version) {
   u32(out, 10, until);
   u16(out, 14, bitmap ? bitmap.pixels.length : 0);
   if (event !== null) { u32(out, 16, event); }
-  var semantic = version === 3 ? semanticOf(slot) : null;
+  var semantic = version >= 3 ? semanticOf(slot,version,false) : null;
   if (semantic) {
     out[20] = semantic.kind; out[21] = semantic.flags;
     out[22] = semantic.unit.length; out[23] = semantic.label.length; out[24] = semantic.source;
+    if (version === 4) {
+      out[25]=semantic.detail; out[26]=semantic.qualifiers; u32(out,52,semantic.observedAt);
+    }
     if (semantic.flags & 1) { f64(out,28,semantic.value); }
     if (semantic.flags & 2) { f64(out,36,semantic.min); }
     if (semantic.flags & 4) { f64(out,44,semantic.max); }
@@ -205,7 +233,7 @@ function record(slot, nowSec, version) {
 
 /** Five fixed slots, including holes. No fetching, cache mutation or inference. */
 function packComplications(slots, nowSec, version) {
-  version = version === 1 || version === 2 ? version : VERSION;
+  version = version === 1 || version === 2 || version === 3 ? version : VERSION;
   var out = [version, 0, 0, 0, 0, 0];
   var values = Array.isArray(slots) ? slots : [];
   for (var i = 0; i < SLOT_COUNT; i++) { out = out.concat(record(values[i], nowSec,version)); }
@@ -215,4 +243,4 @@ function packComplications(slots, nowSec, version) {
   return out;
 }
 
-module.exports = {packComplications:packComplications, normalizeText:normalizeText, crc16Xmodem:crc16Xmodem, SEMANTIC_KIND:SEMANTIC_KIND, SOURCE_KIND:SOURCE_KIND};
+module.exports = {packComplications:packComplications, normalizeText:normalizeText, crc16Xmodem:crc16Xmodem, SEMANTIC_KIND:SEMANTIC_KIND, SOURCE_KIND:SOURCE_KIND, DETAIL_KIND:DETAIL_KIND, QUALIFIERS:QUALIFIERS};

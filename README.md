@@ -1,9 +1,8 @@
 # Pebble Watchface Core
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.2.0 extends the original
-Halftone extraction with richer reading metadata, longer international text and
-40px artwork, targeting Emery (Pebble Time 2).
+and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.3.0 preserves precise reading identity and honest expiry states,
+structured notification headings and calmer burst updates, targeting Emery (Pebble Time 2).
 
 The package is compiled into each watchface's PBW. Users install a watchface;
 there is no separate core app or background service to install. A core update
@@ -15,7 +14,7 @@ reaches users when a consuming watchface is rebuilt and released.
   normalized scalar/image values and bounded receipt caches.
 - Music title, artist, playing state and artwork; optional new-notification
   summaries; low phone battery.
-- Serialized phone-to-watch messages, v3 packets with strict v1/v2 decoding, freshness and
+- Serialized phone-to-watch messages, v4 packets with strict v1/v2/v3 decoding, freshness and
   expiry, native cache chunks and reconnect/session bookkeeping.
 - Notification baselines and privacy clearing. Music/notification content
   stays transient and is not persisted or logged by this core.
@@ -30,7 +29,25 @@ wire format still contains five bounded records for compatibility. It does not
 supply a weather provider, timer integration or playback controls. Source
 availability and permissions remain the Pebble phone app's responsibility.
 
-## Version 0.2.0
+## Version 0.3.0
+
+- Precise weather/phone detail identifiers preserve Temperature, Feels like,
+  High, Low, wind direction/speed and Phone battery separately from broad units.
+- Known observation time stays separate from receipt time. Forecast metadata
+  is explicit; no source measurement time is inferred from a fresh transfer.
+- Public configured identity survives loading, unavailable, denied, disabled
+  and expired states. Expired is a distinct status; missing records contain no
+  stale numeric/text/image values. Private source identity remains excluded
+  from persistence and unavailable snapshots.
+- Notification sender/title and app name remain separate. Fast burst updates
+  are coalesced into stable intervals without extending the eight-second cap.
+  Icon-only updates repaint without renewing the notice lease. Source redaction
+  clears private text immediately, bypassing coalescing and cancelling queued updates.
+- Version 4 uses a 56-byte record header and is bounded to 5,206 bytes. A
+  6,144-byte consumer inbox remains sufficient. Explicit v1/v2/v3 encoding and
+  strict legacy decoding are retained. Public native v3 caches migrate safely.
+
+## Historical version 0.2.0
 
 - Text is bounded to 128 UTF-8 bytes per record, with separate unit and short-label
   fields. Provider-formatted values remain available alongside numeric metadata.
@@ -53,14 +70,14 @@ availability and permissions remain the Pebble phone app's responsibility.
 - Notification bursts are bounded to eight seconds; baseline/session privacy and
   five-second paused-music grace are retained.
 
-Dynamic adopts this version independently. Halftone continues to bundle 0.1.0
+Dynamic adopts 0.3.0 independently. Halftone continues to bundle 0.1.0
 until it is rebuilt against a separately checked upgrade. No installed
 watchface is changed by updating this repository.
 
 ## Use from a watchface
 
 Consumers pin an independently selected release tarball, such as
-`vendor/pebble-watchface-core-0.2.0.tgz`, reference it with a `file:` dependency,
+`vendor/pebble-watchface-core-0.3.0.tgz`, reference it with a `file:` dependency,
 and commit `package-lock.json`. `vendor/CORE.json` records the upstream version
 and archive checksum. This supports `npm ci` without an npm publishing account
 or a dependency on a changing Git branch.

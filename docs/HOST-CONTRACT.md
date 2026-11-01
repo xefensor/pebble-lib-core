@@ -1,4 +1,4 @@
-# Host contract — 0.2.0
+# Host contract — 0.3.0
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
@@ -12,7 +12,7 @@ persistence namespace, settings, drawing and event ownership.
 | `createMessageQueue(options)` | Returns a serialized `send(payload, success, failure)` function shared by theme, complication and context messages |
 | `createComplications(options)` | Subscribes to the first two global choices; supplies `refresh()`, `configure()` and `status()` |
 | `createContext(options)` | Coordinates music, optional notifications and phone battery; supplies refresh/configuration/connection/status/stop methods |
-| `wire` | Bounded text/image normalization and version-3 packet encoding helpers |
+| `wire` | Bounded text/image normalization and version-4 packet encoding helpers |
 
 Both source coordinators receive `pebble`, generated `keys`, the shared `send`,
 `now`, `later`, `cancelLater` and `getSettings`. `now()` returns milliseconds,
@@ -73,26 +73,35 @@ or perform those updates after routing an event.
 | Notification baseline | Existing notifications are not replayed on startup, reconnect or access reconfiguration |
 
 The native context packet uses five fixed roles: music title/art, music artist,
-notification title/icon, notification body and low phone battery. Notification
+notification sender/title/icon with separate app label, notification body and low phone battery. Notification
 context takes priority over music. An unmarked frame may recover music/status,
 but private notifications stay blocked until a fresh marked baseline matches
 the current native session.
 
-The v3 bounded packet and CRC contract (with strict v1/v2 decoding) are exercised by the shared fixtures in
+The v4 bounded packet and CRC contract (with strict v1/v2/v3 decoding) are exercised by the shared fixtures in
 `tests/fixtures/`. Changing the wire format requires a deliberate versioned
 migration on both C and JavaScript sides. Do not infer weather semantics from
 arbitrary percentages or rewrite a provider's formatted units.
 
 ## Versioned wire and host budgets
 
-Version 3 uses the existing six-byte packet header and a 52-byte record header.
+Version 4 uses the existing six-byte packet header and a 56-byte record header.
+Version 3 retains its exact 52-byte header; versions 1/2 retain 20-byte headers.
 A record retains up to 128 UTF-8 text bytes, a 16-byte unit and 24-byte label,
 optional little-endian IEEE754 binary64 value/min/max, semantic/source enums,
+a precise detail enum, forecast qualifier, known observation timestamp,
 and a 40×40 4bpp bitmap with at most 16 palette entries. Five records fit within
-5,186 bytes. Native AppMessage inboxes need at least 6,144 bytes, including
+5,206 bytes. Native AppMessage inboxes need at least 6,144 bytes, including
 dictionary overhead. Unknown flags/enums, nonfinite metadata, invalid ranges,
 UTF-8, palette references, CRC or lengths are rejected. See the public header
 and cross-language fixtures for exact byte offsets.
+
+Version 4 selected non-ready records may retain only public identity metadata;
+values, images, numeric flags and receipt/expiry/observation timestamps are absent.
+EMPTY records retain no identity. EXPIRED is status 7. Detail and broad kind must
+agree; unknown detail/qualifier values are rejected. Byte25 carries detail,
+byte26 the forecast qualifier, byte27 remains zero and bytes52–55 carry known
+observation time. The doubles at28/36/44 retain their original offsets.
 
 The original eight-key, 256-byte-per-key native cache namespace remains. Stored
 snapshots drop bitmap payloads to stay bounded, while retaining scalar data and
@@ -127,3 +136,12 @@ second copy of calendar events.
 Each consumer has its own UUID, settings and permission manifest. Its PBW
 contains its pinned library version, so changing the shared repository alone
 does not update installed watchfaces.
+
+## Notification presentation metadata
+
+The notification heading record uses text for sender/title (falling back to app
+only when no sender/title is supplied) and semantic.label for the app name.
+Consumers should not split strings on punctuation to recover app identity.
+Text/app identity changes are distinct from bitmap refreshes. Source burst
+coalescing never renews the original interruption deadline; permission and
+session clears cancel pending private updates immediately.

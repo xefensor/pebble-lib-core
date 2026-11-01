@@ -436,10 +436,63 @@ int main(void) {
       assert(result.slots[1].text_length == 128);
       changed=packet; changed.bytes[6+3]=41; reseal(&changed); assert_bad(&changed);
     } else {
-      assert(packet.length == COMPLICATION_MAX_BYTES);
+      assert(packet.length == 5186);
       assert(strlen(result.slots[4].text) == 128 && strlen(result.slots[4].unit) == 16 && strlen(result.slots[4].label) == 24);
       for (size_t cut=0; cut<packet.length; ++cut) assert(!complications_read(packet.bytes,cut,NULL));
       changed=packet; changed.bytes[packet.records[4]+2]=129; reseal(&changed); assert_bad(&changed);
+    }
+  }
+  // V4 adds precise reading identity and observation provenance while keeping
+  // missing values empty. Corrupt metadata must fail before destination writes.
+  const char *v4files[] = {"complications-v4", "context-v4", "maximum-v4"};
+  for (unsigned which = 0; which < 3; ++which) {
+    char path[96]; snprintf(path,sizeof(path),"tests/fixtures/%s.bin",v4files[which]);
+    FILE *file=fopen(path,"rb");assert(file);
+    packet.length=fread(packet.bytes,1,sizeof(packet.bytes),file);fclose(file);
+    assert(packet.bytes[0]==4&&complications_read(packet.bytes,packet.length,&result));
+    size_t at=6;
+    for(unsigned i=0;i<5;++i) {
+      packet.records[i]=at;const uint8_t *r=packet.bytes+at;
+      at+=56+r[2]+r[22]+r[23]+((r[0]&2)?16+complications_u16(r+14):0);
+    }
+    assert(at==packet.length);
+    if(which==0) {
+      assert(result.slots[0].detail==COMPLICATION_DETAIL_FEELS_LIKE);
+      assert(result.slots[0].observed_at==NOW-300);
+      assert(result.slots[1].status==COMPLICATION_STATUS_EXPIRED);
+      assert(result.slots[1].detail==COMPLICATION_DETAIL_HUMIDITY);
+      assert(strcmp(result.slots[1].label,"Humidity")==0);
+      assert(result.slots[1].flags==0&&result.slots[1].text[0]==0&&result.slots[1].observed_at==0);
+      assert(result.slots[2].status==COMPLICATION_STATUS_DENIED);
+      assert(result.slots[2].detail==COMPLICATION_DETAIL_PHONE_BATTERY);
+      const unsigned offsets[]={25,25,26,27};const uint8_t values[]={12,6,2,1};
+      for(unsigned i=0;i<sizeof(offsets)/sizeof(*offsets);++i) {
+        changed=packet;changed.bytes[6+offsets[i]]=values[i];reseal(&changed);assert_bad(&changed);
+      }
+      changed=packet;put32(changed.bytes+6+52,NOW+1);reseal(&changed);assert_bad(&changed);
+      changed=packet;changed.bytes[6+26]=COMPLICATION_QUALIFIER_FORECAST;reseal(&changed);assert_bad(&changed);
+      // A forecast with no observation-time claim remains valid.
+      put32(changed.bytes+6+52,0);reseal(&changed);assert(complications_read(changed.bytes,changed.length,&result));
+      assert(result.slots[0].qualifiers==COMPLICATION_QUALIFIER_FORECAST&&result.slots[0].observed_at==0);
+      // Non-ready records may describe their public identity, never a value.
+      const size_t missing=packet.records[1];
+      changed=packet;changed.bytes[missing]=COMPLICATION_FLAG_TEXT;reseal(&changed);assert_bad(&changed);
+      changed=packet;changed.bytes[missing+21]=COMPLICATION_SEMANTIC_VALUE;reseal(&changed);assert_bad(&changed);
+      changed=packet;put32(changed.bytes+missing+52,NOW-300);reseal(&changed);assert_bad(&changed);
+      changed=packet;changed.bytes[missing+24]=COMPLICATION_SOURCE_NOTIFICATION;reseal(&changed);assert_bad(&changed);
+      changed=packet;changed.bytes[missing+1]=COMPLICATION_STATUS_EMPTY;reseal(&changed);assert_bad(&changed);
+      changed=packet;changed.bytes[missing+1]=COMPLICATION_STATUS_READY;reseal(&changed);assert_bad(&changed);
+      // Out-of-range and unknown status/qualifier values cannot acquire meaning.
+      changed=packet;changed.bytes[missing+1]=8;reseal(&changed);assert_bad(&changed);
+    } else if(which==1) {
+      assert(strcmp(result.slots[2].text,"Xef")==0&&strcmp(result.slots[2].label,"Signal")==0);
+      assert(result.slots[2].source_kind==COMPLICATION_SOURCE_NOTIFICATION);
+      assert(result.slots[4].detail==COMPLICATION_DETAIL_PHONE_BATTERY);
+    } else {
+      assert(packet.length==COMPLICATION_MAX_BYTES&&packet.length==5206);
+      assert(result.slots[4].pixel_bytes==800&&result.slots[4].text_length==128);
+      assert(result.slots[4].observed_at==NOW-60);
+      for(size_t cut=0;cut<packet.length;++cut)assert(!complications_read(packet.bytes,cut,NULL));
     }
   }
   return 0;

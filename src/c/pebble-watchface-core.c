@@ -59,7 +59,7 @@ static size_t cache_packet(const uint8_t *input, size_t length, uint8_t *output,
                            size_t capacity) {
   // Legacy live snapshots remain readable, but their unknown source identity
   // cannot establish that a value is safe to persist.
-  if (input[0] != 3) return 0;
+  if (input[0] != 3 && input[0] != 4) return 0;
   const size_t header = complications_record_header_bytes(input[0]);
   if (capacity < COMPLICATION_HEADER_BYTES) return 0;
   memmove(output, input, COMPLICATION_HEADER_BYTES);
@@ -68,7 +68,7 @@ static size_t cache_packet(const uint8_t *input, size_t length, uint8_t *output,
     const uint8_t *record = input + from;
     const unsigned flags = record[0];
     const size_t text = record[2];
-    const size_t metadata = input[0] == 3 ? record[22] + record[23] : 0;
+    const size_t metadata = input[0] >= 3 ? record[22] + record[23] : 0;
     const size_t bitmap = flags & COMPLICATION_FLAG_BITMAP
         ? COMPLICATION_PALETTE_BYTES + complications_u16(record + 14) : 0;
     const size_t retained = header + text + metadata;
@@ -76,12 +76,23 @@ static size_t cache_packet(const uint8_t *input, size_t length, uint8_t *output,
     if (next > length || to + retained > capacity) return 0;
     const bool private_source = record[24] == COMPLICATION_SOURCE_MUSIC ||
                                 record[24] == COMPLICATION_SOURCE_NOTIFICATION;
-    if (private_source || (record[1] == COMPLICATION_STATUS_READY &&
-        !(flags & (COMPLICATION_FLAG_TEXT | COMPLICATION_FLAG_TIMESTAMP)))) {
-      // Private sources never persist. Image-only readings have no cached value.
+    if (private_source) {
       memset(output + to, 0, header);
       output[to + 1] = COMPLICATION_STATUS_UNAVAILABLE;
       to += header;
+    } else if (record[1] == COMPLICATION_STATUS_READY &&
+               !(flags & (COMPLICATION_FLAG_TEXT | COMPLICATION_FLAG_TIMESTAMP))) {
+      // An image-only reading has no cached value. V4 can still retain its
+      // public identity; copy before clearing so in-place compaction is safe.
+      if (input[0] == 4) {
+        memmove(output + to,record,retained);
+        memset(output + to,0,20); output[to + 1]=COMPLICATION_STATUS_UNAVAILABLE;
+        output[to + 21]=0; memset(output + to + 28,0,28);
+        to += retained;
+      } else {
+        memset(output + to,0,header); output[to + 1]=COMPLICATION_STATUS_UNAVAILABLE;
+        to += header;
+      }
     } else {
       memmove(output + to, record, retained);
       output[to] &= ~(COMPLICATION_FLAG_BITMAP | COMPLICATION_FLAG_IMAGE);
@@ -106,7 +117,7 @@ bool wfc_load_cache(WatchfaceCore *state, time_t now) {
   if (first_length < COMPLICATION_HEADER_BYTES || first_length > WFC_CACHE_CHUNK_BYTES ||
       storage->read(storage->context, first_key, state->complication_packet,
                     WFC_CACHE_CHUNK_BYTES) != first_length) { return false; }
-  if (state->complication_packet[0] != 3) {
+  if (state->complication_packet[0] != 3 && state->complication_packet[0] != 4) {
     state->has_complications = false; state->complication_packet_length = 0;
     memset(&state->complications, 0, sizeof(state->complications));
     memset(state->was_fresh, 0, sizeof(state->was_fresh));

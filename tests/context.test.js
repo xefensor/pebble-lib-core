@@ -15,15 +15,17 @@ const battery=value=>({instances:[{instanceId:'phone',properties:{battery_level:
 const envelope=instances=>({instances});
 function decode(bytes) {
   const buffer=Buffer.from(bytes); let at=6;
-  const header=buffer[0]>=3 ? 52 : 20;
+  const header=buffer[0]>=4 ? 56 : buffer[0]===3 ? 52 : 20;
   return Array.from({length:5},()=>{
     const value={flags:buffer[at],status:buffer[at+1],width:buffer[at+3],height:buffer[at+4],
       confirmedAt:buffer.readUInt32LE(at+6),validUntil:buffer.readUInt32LE(at+10)};
     const length=buffer[at+2], pixelBytes=buffer.readUInt16LE(at+14);
-    const unitLength=header===52 ? buffer[at+22] : 0,labelLength=header===52 ? buffer[at+23] : 0;
+    const unitLength=header>=52 ? buffer[at+22] : 0,labelLength=header>=52 ? buffer[at+23] : 0;
     value.text=buffer.subarray(at+header,at+header+length).toString('utf8');
-    if(header===52) value.semantic={kind:buffer[at+20],source:buffer[at+24],value:buffer[at+21]&1 ? buffer.readDoubleLE(at+28) : undefined,
+    if(header>=52) value.semantic={kind:buffer[at+20],source:buffer[at+24],value:buffer[at+21]&1 ? buffer.readDoubleLE(at+28) : undefined,
       min:buffer[at+21]&2 ? buffer.readDoubleLE(at+36) : undefined,max:buffer[at+21]&4 ? buffer.readDoubleLE(at+44) : undefined};
+    if(header>=52) value.semantic.label=buffer.subarray(at+header+length+unitLength,at+header+length+unitLength+labelLength).toString('utf8');
+    if(header===56) Object.assign(value.semantic,{detail:buffer[at+25],qualifiers:buffer[at+26],observedAt:buffer.readUInt32LE(at+52)});
     if (value.flags&2) value.pixels=[...buffer.subarray(at+header+length+unitLength+labelLength+16,at+header+length+unitLength+labelLength+16+pixelBytes)];
     at+=header+length+unitLength+labelLength+(value.flags&2?16+pixelBytes:0);
     return value;
@@ -144,7 +146,7 @@ test('Notification baseline suppresses existing shade entries and only newly arr
   const existing=notification('old');f.source('notifications',envelope([existing]));
   assert.equal(f.packet()[2].status,0);
   f.source('notifications',envelope([notification('new'),existing]));
-  assert.equal(f.packet()[2].text,'Signal · Alexej');
+  assert.equal(f.packet()[2].text,'Alexej');
   assert.equal(f.packet()[3].status,0,'message bodies are hidden by default');
   assert.equal(f.packet()[2].validUntil,NOW/1000+8);
   assert.equal(f.client.status().notification,true);
@@ -154,7 +156,7 @@ test('Notification body previews are opt-in, sanitize controls, and never renew 
   const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
   f.source('notifications',envelope([]));
   f.source('notifications',envelope([notification('one','Alex\u202e\nXef','Signal','Meet\nme\u200b here')]));
-  assert.equal(f.packet()[2].text,'Signal · Alex Xef');
+  assert.equal(f.packet()[2].text,'Alex Xef');
   assert.equal(f.packet()[3].text,'Meet me here');
   const first=f.packet()[2];f.tick(5000);
   f.source('notifications',envelope([notification('one','Alex\u202e\nXef','Signal','Meet\nme\u200b here')]));
@@ -196,18 +198,18 @@ test('App-name and package filters match exact case-insensitive entries and igno
   f.source('notifications',envelope([notification('no','Update','Signal Beta')]));
   assert.equal(f.packet()[2].status,0);
   f.source('notifications',envelope([notification('yes','Hello','SIGNAL')]));
-  assert.equal(f.packet()[2].text,'SIGNAL · Hello');
+  assert.equal(f.packet()[2].text,'Hello');
   f.source('notifications',envelope([notification('package','Hello','WhatsApp Business','text',{
     package:{longText:{text:'com.whatsapp'}}})]));
-  assert.equal(f.packet()[2].text,'WhatsApp Business · Hello');
+  assert.equal(f.packet()[2].text,'Hello');
 });
 
 test('The newest allowed new notification wins; duplicate and prototype-like IDs remain safe',()=>{
   const f=fixture({settings:{showNotifications:true}});f.client.refresh();f.source('notifications',envelope([]));
   f.source('notifications',envelope([notification('__proto__','Newest'),notification('constructor','Older'),notification('__proto__','Duplicate')]));
-  assert.equal(f.packet()[2].text,'Signal · Newest');
+  assert.equal(f.packet()[2].text,'Newest');
   f.tick(1000);f.source('notifications',envelope([notification('__proto__','Newest'),notification('constructor','Older')]));
-  assert.equal(f.packet()[2].text,'Signal · Newest');
+  assert.equal(f.packet()[2].text,'Newest');
 });
 
 test('Reconnection suppresses accumulated notifications and ignores callbacks from previous subscriptions',()=>{
@@ -472,7 +474,7 @@ test('Music titles and artists retain128UTF8bytes and request40px artwork while 
   assert.deepEqual(f.latest('notifications').iconPixelSize,{w:24,h:24});
   f.source('notifications',envelope([]));f.source('notifications',envelope([notification('one','Alexej','Signal','Text',{app_icon:{image:shape}})]));
   assert.equal(f.packet()[2].flags,1,'oversized notification icons are omitted');assert.equal(f.packet()[2].semantic.source,4);
-  f.source('phone',battery(0));assert.deepEqual(f.packet()[4].semantic,{kind:3,source:2,value:0,min:0,max:100});
+  f.source('phone',battery(0));assert.deepEqual(f.packet()[4].semantic,{kind:3,source:2,value:0,min:0,max:100,label:'',detail:11,qualifiers:0,observedAt:0});
 });
 
 test('A continuous notification burst updates the visible text but cannot extend its8second interruption, then resets after quiet',()=>{
@@ -516,4 +518,73 @@ test('Shared transport coalesces waiting context snapshots to the latest data an
 test('A superseded standalone context transfer is terminal and never changes provider health',()=>{
   const f=fixture();f.hold(true);f.client.refresh();f.callbacks.at(-1).failure({code:'SUPERSEDED'});
   const count=f.deliveries.length;f.tick(5000);assert.equal(f.deliveries.length,count);assert.equal(f.client.status().error,'');
+});
+
+test('Notification sender and app remain independent fields, including source punctuation and long app names',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+  f.source('notifications',envelope([]));
+  f.source('notifications',envelope([notification('one','Xef · Work group','A very long application name that should stay secondary','Hello')]));
+  assert.equal(f.packet()[2].text,'Xef · Work group');
+  assert.ok(Buffer.byteLength(f.packet()[2].semantic.label,'utf8')<=24);
+  assert.ok(f.packet()[2].semantic.label.startsWith('A very long'));
+  assert.equal(f.packet()[3].text,'Hello');
+  f.source('notifications',envelope([notification('two','','Signal','No sender')]));
+  assert.equal(f.packet()[2].text,'Signal');assert.equal(f.packet()[2].semantic.label,'Signal');
+});
+
+test('Rapid conversation changes show the first notice immediately then coalesce to the newest stable update',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+  f.source('notifications',envelope([]));
+  f.source('notifications',envelope([notification('chat','Xef','Signal','First')]));
+  assert.equal(f.packet()[3].text,'First');
+  const deadline=f.packet()[2].validUntil, delivered=f.deliveries.length;
+  f.tick(100);f.source('notifications',envelope([notification('chat','Xef','Signal','Second')]));
+  f.tick(100);f.source('notifications',envelope([notification('chat','Xef','Signal','Latest')]));
+  assert.equal(f.packet()[3].text,'First');assert.equal(f.deliveries.length,delivered);
+  f.tick(699);assert.equal(f.packet()[3].text,'First');
+  f.tick(1);assert.equal(f.packet()[3].text,'Latest');assert.equal(f.deliveries.length,delivered+1);
+  assert.equal(f.packet()[2].validUntil,deadline);
+  f.tick(100);f.source('notifications',envelope([notification('chat','Xef','Signal','Too late to replay')]));
+  f.tick(800);assert.equal(f.packet()[3].text,'Too late to replay');
+  assert.equal(f.packet()[2].validUntil,deadline);
+  f.tick(6200);assert.equal(f.packet()[2].status,0);assert.equal(f.packet()[3].status,0);
+});
+
+test('Queued notice updates are cancelled by removal, permission changes, reconnection and shutdown',()=>{
+  for(const stop of [f=>f.source('notifications',envelope([])),f=>{f.settings.showNotifications=false;f.client.configure();},
+    f=>{f.settings.notificationPreview=false;f.client.configure();},f=>f.error('notifications','PERMISSION_DENIED'),
+    f=>f.client.connectionChanged(false),f=>f.client.stop()]) {
+    const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+    f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat','Xef','Signal','First')]));
+    f.tick(100);f.source('notifications',envelope([notification('chat','Xef','Signal','Queued private body')]));
+    const before=f.deliveries.length;stop(f);f.tick(2000);
+    assert.equal(f.client.status().notification,false);
+    for(const packet of f.deliveries.slice(before)) {
+      assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Queued private body')));
+    }
+  }
+});
+
+test('Late notification artwork updates in place without changing text, confirmation time or expiry',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+  const shape={width:3,height:2,palette:Buffer.from([0,255]).toString('base64'),pixels:Buffer.from([0x10,0x10,0x01,0]).toString('base64')};
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat')]));
+  const original=f.packet()[2];assert.equal(original.flags,1);
+  f.tick(1000);f.source('notifications',envelope([notification('chat','Alexej','Signal','Dinner in ten minutes',{app_icon:{icon:shape}})]));
+  const refreshed=f.packet()[2];assert.equal(refreshed.flags,3);
+  assert.equal(refreshed.text,original.text);assert.equal(refreshed.semantic.label,'Signal');
+  assert.equal(refreshed.confirmedAt,original.confirmedAt);assert.equal(refreshed.validUntil,original.validUntil);
+  assert.deepEqual(refreshed.pixels,[0x10,0x10,0,0,0x01,0,0,0]);
+});
+
+test('Source redaction bypasses coalescing and cannot be undone by a queued private update',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat','Private sender','Signal','Private body')]));
+  f.tick(100);f.source('notifications',envelope([notification('chat','Private sender','Signal','Queued private body')]));
+  assert.equal(f.packet()[3].text,'Private body');
+  f.tick(100);f.source('notifications',envelope([notification('chat','','Signal','')]));
+  assert.equal(f.packet()[2].text,'Signal');assert.equal(f.packet()[3].status,0);
+  const after=f.deliveries.length;f.tick(2000);
+  assert.equal(f.packet()[2].text,'Signal');assert.equal(f.packet()[3].status,0);
+  for(const packet of f.deliveries.slice(after)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
 });

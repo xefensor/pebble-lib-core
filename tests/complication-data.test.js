@@ -10,7 +10,7 @@ function decode(packet) {
   assert.ok(Array.isArray(packet));
   assert.ok(packet.every(byte=>Number.isInteger(byte)&&byte>=0&&byte<=255));
   const b=Buffer.from(packet);
-  assert.equal(b[0],3);
+  assert.equal(b[0],4);
   assert.equal(b[1],0);
   assert.equal(b.readUInt16LE(2),b.length);
   const check=[...packet]; check[4]=check[5]=0;
@@ -25,7 +25,8 @@ function decode(packet) {
       validUntil:b.readUInt32LE(at+10),pixelBytes,timestamp:b.readUInt32LE(at+16)};
     const unitLength=b[at+22],labelLength=b[at+23];
     slot.semantic={kind:b[at+20],flags:b[at+21],source:b[at+24],value:b.readDoubleLE(at+28),min:b.readDoubleLE(at+36),max:b.readDoubleLE(at+44)};
-    at+=52;
+    slot.detail=b[at+25];slot.qualifiers=b[at+26];slot.observedAt=b.readUInt32LE(at+52);
+    at+=56;
     slot.text=b.subarray(at,at+textLength).toString('utf8'); at+=textLength;
     slot.semantic.unit=b.subarray(at,at+unitLength).toString('utf8');at+=unitLength;
     slot.semantic.label=b.subarray(at,at+labelLength).toString('utf8');at+=labelLength;
@@ -59,7 +60,7 @@ test('Five implicit slots preserve holes and non-ready statuses without retainin
     for(const key of ['textLength','width','height','confirmedAt','validUntil','pixelBytes','timestamp']) assert.equal(slots[i][key],0);
   }
   assert.ok(!Buffer.from(packet).toString().includes('secret'));
-  assert.equal(packComplications(null,NOW).length,266);
+  assert.equal(packComplications(null,NOW).length,286);
 });
 
 test('READY timing is exclusive, bounded to two hours, and never wraps unsigned timestamps',()=>{
@@ -67,7 +68,9 @@ test('READY timing is exclusive, bounded to two hours, and never wraps unsigned 
   for(const slot of [ready({text:'expired',validUntil:NOW}),ready({text:'old',confirmedAt:NOW-7200,validUntil:NOW+100}),
     ready({text:'future',confirmedAt:NOW+1}),ready({text:'bad',confirmedAt:0}),ready({text:'bad',validUntil:4294967296})]) {
     const decoded=decode(packComplications([slot],NOW))[0];
-    assert.equal(decoded.status,3);
+    const elapsed=slot.confirmedAt<=NOW && slot.confirmedAt>0 && slot.validUntil<=4294967295 &&
+      Math.min(slot.validUntil,slot.confirmedAt+7200)<=NOW;
+    assert.equal(decoded.status,elapsed?7:3);
     assert.equal(decoded.flags,0);
     assert.equal(decoded.confirmedAt,0);
   }
@@ -183,12 +186,12 @@ test('Visible bitmap indices use the original palette while unused row padding i
   assert.equal(slots[3].status,2,'odd-row low nibbles and row padding are not visible');
 });
 
-test('Five maximum records fit5186 bytes without truncation, overflow or input mutation',()=>{
+test('Five maximum records fit5206 bytes without truncation, overflow or input mutation',()=>{
   const bitmap={width:40,height:40,palette:Array.from({length:16},(_,i)=>i),pixels:Array(800).fill(0x21),image:true};
   const inputs=Array.from({length:5},()=>ready({text:'x'.repeat(128),bitmap,semantic:{kind:1,source:1,value:12.25,min:-20,max:40,unit:'u'.repeat(16),label:'l'.repeat(24)},unknown:'never encoded'}));
   const before=JSON.stringify(inputs);
   const packet=packComplications(inputs,NOW);
-  assert.equal(packet.length,5186);
+  assert.equal(packet.length,5206);
   const slots=decode(packet);
   assert.ok(slots.every(slot=>slot.textLength===128&&slot.pixelBytes===800&&slot.flags===7));
   assert.equal(JSON.stringify(inputs),before);
@@ -235,4 +238,44 @@ test('Invalid optional semantic values cannot corrupt otherwise usable provider 
   const slot=decode(packComplications([ready({text:'1',semantic:{value:1e300,min:-1e300,max:1e300,label:'界'.repeat(20)}})],NOW))[0];
   assert.equal(slot.semantic.value,1e300);assert.equal(slot.semantic.min,-1e300);
   assert.ok(Buffer.byteLength(slot.semantic.label)<=24);assert.ok(slot.semantic.label.endsWith('…'));
+});
+
+test('V4 missing and expired readings retain only public identity, never prior values',()=>{
+  for(const status of [1,3,4,5,6,7]) {
+    const semantic={kind:4,source:1,detail:6,unit:'%',label:'Humidity',value:73,min:0,max:100,observedAt:NOW-500};
+    const input={status,text:'PRIVATE OLD VALUE',semantic,confirmedAt:NOW-500,validUntil:NOW-1,
+      timestamp:NOW,bitmap:{width:1,height:1,palette:[192],pixels:[0,0,0,0]}};
+    const packet=packComplications([input],NOW), slot=decode(packet)[0];
+    assert.equal(slot.status,status);assert.equal(slot.flags,0);assert.equal(slot.text,'');
+    assert.equal(slot.semantic.label,'Humidity');assert.equal(slot.detail,6);
+    assert.equal(slot.semantic.flags,0);assert.equal(slot.observedAt,0);
+    assert.equal(slot.confirmedAt,0);assert.equal(slot.validUntil,0);assert.equal(slot.timestamp,0);
+    assert.equal(Buffer.from(packet).includes(Buffer.from('PRIVATE OLD VALUE')),false);
+  }
+  for(const source of [3,4]) {
+    const slot=decode(packComplications([{status:7,semantic:{source,label:'PRIVATE SOURCE NAME'}}],NOW))[0];
+    assert.equal(slot.semantic.source,0);assert.equal(slot.semantic.label,'');
+  }
+  const empty=decode(packComplications([{status:0,semantic:{kind:4,source:1,detail:6,label:'Unused'}}],NOW))[0];
+  assert.equal(empty.semantic.kind,0);assert.equal(empty.semantic.label,'');
+  const expired=decode(packComplications([ready({text:'73%',validUntil:NOW,
+    semantic:{kind:4,source:1,detail:6,label:'Humidity',value:73}})],NOW))[0];
+  assert.equal(expired.status,7);assert.equal(expired.semantic.label,'Humidity');assert.equal(expired.semantic.flags,0);
+});
+
+test('V4 precise meaning and observation metadata reject incoherent optional claims',()=>{
+  const good={kind:1,source:1,detail:2,observedAt:NOW-500,unit:'°C',label:'Feels like'};
+  const slot=decode(packComplications([ready({text:'5°C',semantic:good})],NOW))[0];
+  assert.equal(slot.detail,2);assert.equal(slot.observedAt,NOW-500);
+  const forecast=decode(packComplications([ready({text:'12°C',semantic:{kind:1,source:1,detail:1,qualifiers:1}})],NOW))[0];
+  assert.equal(forecast.qualifiers,1);assert.equal(forecast.observedAt,0);
+  for(const semantic of [{...good,detail:12},{...good,detail:6},{...good,qualifiers:2},
+    {...good,qualifiers:1},{...good,observedAt:NOW+1},{...good,observedAt:-1},
+    {kind:1,source:2,qualifiers:1}]) {
+    const invalid=decode(packComplications([ready({text:'Provider value',semantic})],NOW))[0];
+    assert.equal(invalid.text,'Provider value');assert.equal(invalid.status,2);
+    assert.equal(invalid.detail,0);assert.equal(invalid.qualifiers,0);assert.equal(invalid.observedAt,0);
+  }
+  const amount=decode(packComplications([ready({text:'2 mm',semantic:{kind:9,source:1,detail:5,value:2,unit:'mm'}})],NOW))[0];
+  assert.equal(amount.detail,5);assert.equal(amount.semantic.kind,9);assert.equal(amount.displayKind,0);
 });

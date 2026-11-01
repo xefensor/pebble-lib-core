@@ -11,21 +11,22 @@ const preference=(slot,category='test',item='reading',index=0,property='value')=
 const envelope=(property,extra={})=>({pluginUuid:'native-resolved-provider',instances:[{instanceId:'irrelevant-name',properties:{value:property}}],...extra});
 function decode(bytes) {
   const buffer=Buffer.from(bytes);
-  const header=buffer[0]>=3 ? 52 : 20;
+  const header=buffer[0]>=4 ? 56 : buffer[0]===3 ? 52 : 20;
   let at=6;
   return Array.from({length:5},()=>{
     const result={flags:buffer[at],status:buffer[at+1],displayKind:buffer[at+5],confirmedAt:buffer.readUInt32LE(at+6),
       validUntil:buffer.readUInt32LE(at+10),timestamp:buffer.readUInt32LE(at+16)};
     const length=buffer[at+2];
     const pixelBytes=buffer.readUInt16LE(at+14);
-    const unitLength=header===52 ? buffer[at+22] : 0, labelLength=header===52 ? buffer[at+23] : 0;
+    const unitLength=header>=52 ? buffer[at+22] : 0, labelLength=header>=52 ? buffer[at+23] : 0;
     result.text=buffer.subarray(at+header,at+header+length).toString('utf8');
-    if(header===52) result.semantic={kind:buffer[at+20],source:buffer[at+24],
+    if(header>=52) result.semantic={kind:buffer[at+20],source:buffer[at+24],
       value:buffer[at+21]&1 ? buffer.readDoubleLE(at+28) : undefined,
       min:buffer[at+21]&2 ? buffer.readDoubleLE(at+36) : undefined,
       max:buffer[at+21]&4 ? buffer.readDoubleLE(at+44) : undefined,
       unit:buffer.subarray(at+header+length,at+header+length+unitLength).toString('utf8'),
       label:buffer.subarray(at+header+length+unitLength,at+header+length+unitLength+labelLength).toString('utf8')};
+    if(header===56) Object.assign(result.semantic,{detail:buffer[at+25],qualifiers:buffer[at+26],observedAt:buffer.readUInt32LE(at+52)});
     at+=header+length+unitLength+labelLength+(result.flags&2?16+pixelBytes:0);
     return result;
   });
@@ -235,7 +236,7 @@ test('Source expiry is exclusive, malformed expiry clears, and expiry timers do 
   const f=fixture();f.client.refresh();f.prefs([preference(0)]);
   f.source(envelope({shortText:{text:'limited'}},{validUntilMs:NOW+60000}));
   const before=f.subscriptions.length;f.tick(60000);
-  assert.equal(f.packet()[0].status,3);assert.equal(f.subscriptions.length,before);
+  assert.equal(f.packet()[0].status,7);assert.equal(f.subscriptions.length,before);
   f.source(envelope({shortText:{text:'bad expiry'}},{validUntilMs:'tomorrow'}));
   assert.equal(f.packet()[0].status,3);assert.equal(f.packet()[0].flags,0);
 });
@@ -337,7 +338,7 @@ test('Compact source bitmap rows are repacked into the watch stride with zeroed 
   assert.equal(packet[first+1],2);
   assert.equal(packet[first+3],3);assert.equal(packet[first+4],2);
   assert.equal(packet.readUInt16LE(first+14),8);
-  const pixels=first+52+packet[first+2]+packet[first+22]+packet[first+23]+16;
+  const pixels=first+56+packet[first+2]+packet[first+22]+packet[first+23]+16;
   assert.deepEqual([...packet.subarray(pixels,pixels+8)],[0x01,0x10,0,0,0x10,0,0,0]);
   // A four-byte-aligned source payload is not the public ImageShape format.
   f.source(envelope({icon:{...image,pixels:Buffer.from([0x01,0x10,0,0,0x10,0,0,0]).toString('base64')}}));
@@ -511,7 +512,7 @@ test('Semantic metadata retains exact source identity, numeric values and ranges
   f.source({instances:[{properties:{battery_level:{shortText:{text:'0%'},numericValue:{value:0,unit:'%',min:0,max:100}}}}]},'phone','phone_state');
   const [temperature,battery]=f.packet();
   assert.equal(temperature.text,'5,3°F');
-  assert.deepEqual(temperature.semantic,{kind:1,source:1,value:5.25,min:-40,max:120,unit:'°F',label:'Air temperature'});
+  assert.deepEqual(temperature.semantic,{kind:1,source:1,value:5.25,min:-40,max:120,unit:'°F',label:'Air temperature',detail:1,qualifiers:0,observedAt:0});
   assert.equal(battery.text,'0%');assert.equal(battery.semantic.kind,3);assert.equal(battery.semantic.source,2);
   assert.equal(battery.semantic.value,0);assert.equal(battery.semantic.min,0);assert.equal(battery.semantic.max,100);
   assert.equal(f.client.status().slots[0].label,'Air temperature');
@@ -622,4 +623,92 @@ test('Unclassifiable old selected-reading caches and private semantic records ar
   restored.values.set('watchface-core-complications-v1',JSON.stringify(cleaned));
   const again=fixture({values:restored.values});
   assert.ok(!JSON.stringify([...again.values.values()]).includes('Private mislabeled'));
+});
+
+test('Weather and phone identities preserve their precise property before, during and after a value',()=>{
+  const kinds={temperature:[1,1],feels_like:[1,2],high:[1,3],low:[1,4],precipitation:[0,0],
+    humidity:[4,6],wind_speed:[5,7],wind_direction:[5,8],uv_index:[6,9],condition:[7,10]};
+  for(const [property,[kind,detail]]of Object.entries(kinds)) {
+    const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,property)]);
+    let slot=f.packet()[0];
+    assert.equal(slot.status,1);assert.equal(slot.semantic.kind,kind,property);
+    assert.equal(slot.semantic.detail,detail,property);assert.equal(slot.semantic.label,property.replace(/_/g,' '));
+    const text=property==='condition'?'Cloudy':property==='precipitation'?'2 mm':'7';
+    f.source({validUntilMs:NOW+2000,instances:[{properties:{[property]:{shortText:{text}}}}]},'weather','location');
+    assert.equal(f.packet()[0].semantic.detail,detail,property);
+    f.tick(2000);slot=f.packet()[0];
+    assert.equal(slot.status,7);assert.equal(f.client.status().slots[0].status,'expired');
+    assert.equal(slot.semantic.detail,detail);assert.equal(slot.semantic.source,1);
+    assert.equal(slot.semantic.label,property.replace(/_/g,' '));
+    assert.equal(slot.flags,0);assert.equal(slot.text,'');assert.equal(slot.semantic.value,undefined);
+    assert.equal(slot.confirmedAt,0);assert.equal(slot.validUntil,0);assert.equal(slot.semantic.observedAt,0);
+    f.sourceError('PERMISSION_DENIED','weather','location');slot=f.packet()[0];
+    assert.equal(slot.status,4);assert.equal(slot.semantic.detail,detail);
+    f.sourceError('PLUGIN_DISABLED','weather','location');assert.equal(f.packet()[0].status,6);
+    assert.equal(f.packet()[0].semantic.detail,detail);
+    f.sourceError('UNSUPPORTED','weather','location');assert.equal(f.packet()[0].status,5);
+    assert.equal(f.packet()[0].semantic.detail,detail);
+    f.sourceError('SOURCE_UNAVAILABLE','weather','location');assert.equal(f.packet()[0].status,3);
+    assert.equal(f.packet()[0].semantic.detail,detail);
+  }
+  const f=fixture();f.client.refresh();f.prefs([preference(1,'phone','phone_state',0,'battery_level')]);
+  assert.equal(f.packet()[1].semantic.detail,11);assert.equal(f.packet()[1].semantic.source,2);
+  assert.equal(f.packet()[0].status,0);assert.equal(f.packet()[0].semantic.label,'');
+});
+
+test('Forecast temperature is explicitly qualified and never acquires an invented observation time',()=>{
+  for(const [property,detail]of [['temperature',1],['feels_like',2],['high',3],['low',4]]) {
+    const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,property)]);
+    assert.ok(f.latest('weather','location').properties.includes('is_forecast'));
+    f.source({instances:[{properties:{[property]:{shortText:{text:'5°C'}},
+      is_forecast:{boolean:{value:true}},observed_at:{timestamp:{value:NOW/1000-3600}}}}]},'weather','location');
+    const slot=f.packet()[0];assert.equal(slot.semantic.detail,detail);assert.equal(slot.semantic.qualifiers,1);
+    assert.equal(slot.semantic.observedAt,0);assert.equal(f.client.status().slots[0].observedAt,null);
+  }
+  const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,'temperature')]);
+  f.source({instances:[{properties:{temperature:{shortText:{text:'5°C'}},
+    is_forecast:{boolean:{value:false}},observed_at:{timestamp:{value:NOW/1000-600}}}}]},'weather','location');
+  assert.equal(f.packet()[0].semantic.observedAt,NOW/1000-600);
+  const before=f.packet()[0];f.tick(60000);f.client.configure();
+  assert.equal(f.packet()[0].semantic.observedAt,before.semantic.observedAt);
+  assert.equal(f.packet()[0].confirmedAt,before.confirmedAt);
+});
+
+test('Expired or denied private selections cannot retain a value, label or source identity on the wire',()=>{
+  for(const category of ['music','notifications']) {
+    const f=fixture();f.client.refresh();const selected=preference(0,category,'item',0,'value');
+    selected.properties.label={shortText:{text:'Private person'}};f.prefs([selected]);
+    assert.equal(f.packet()[0].semantic.label,'');
+    f.source(envelope({shortText:{text:'Private message'}},{validUntilMs:NOW+1000}),category,'item');
+    assert.equal(f.packet()[0].text,'Private message');f.tick(1000);
+    const expired=f.packet()[0];assert.equal(expired.status,7);assert.equal(expired.semantic.label,'');
+    assert.equal(expired.semantic.source,0);assert.equal(expired.text,'');
+    f.sourceError('PERMISSION_DENIED',category,'item');assert.equal(f.packet()[0].semantic.label,'');
+    assert.ok(!JSON.stringify([...f.values.values()]).includes('Private message'));
+    assert.ok(!JSON.stringify([...f.values.values()]).includes('Private person'),'private descriptor labels must not reach persistent cache metadata');
+  }
+});
+
+test('Older public caches gain descriptor meaning without renewing values or measurement timestamps',()=>{
+  const seed=fixture();seed.client.refresh();seed.prefs([preference(0,'weather','location',0,'feels_like')]);
+  seed.source({instances:[{properties:{feels_like:{shortText:{text:'4°C'}}}}]},'weather','location');
+  const cached=JSON.parse(seed.values.get('watchface-core-complications-v1'));
+  delete cached.records[0].semantic.detail;delete cached.records[0].semantic.qualifiers;
+  seed.values.set('watchface-core-complications-v1',JSON.stringify(cached));
+  const restored=fixture({values:seed.values});restored.advance(60000);restored.client.refresh();
+  restored.prefs([preference(0,'weather','location',0,'feels_like')]);
+  assert.equal(restored.packet()[0].semantic.detail,2);assert.equal(restored.packet()[0].text,'4°C');
+  assert.equal(restored.packet()[0].confirmedAt,NOW/1000);
+  assert.equal(restored.packet()[0].validUntil,NOW/1000+7200);
+  assert.equal(restored.client.status().slots[0].cached,true);
+});
+
+test('Legacy cache signatures also scrub private custom labels before preferences are available',()=>{
+  const values=new Map();
+  values.set('watchface-core-complications-v1',JSON.stringify({signature:'two:'+JSON.stringify([
+    {category:'music',item:'track',property:'title',index:0,label:'Private person'},null]),records:[null,null]}));
+  fixture({values,unavailable:true});
+  assert.ok(!JSON.stringify([...values.values()]).includes('Private person'));
+  const signature=JSON.parse(values.get('watchface-core-complications-v1')).signature;
+  assert.equal(JSON.parse(signature.slice(4))[0].category,'music');
 });

@@ -158,5 +158,14 @@ int main(void) {
   assert(context_receive(bytes,length,&data,&awaiting,false));
   assert(data.slots[2].flags == 0 && data.slots[3].flags == 0);
   assert(context_mode(&data,NOW) == CONTEXT_MUSIC);
+  FILE *v4 = fopen("tests/fixtures/context-v4.bin","rb");assert(v4);
+  length=fread(bytes,1,sizeof(bytes),v4);fclose(v4);
+  assert(context_read(bytes,length,&data));
+  assert(strcmp(data.slots[2].text,"Xef")==0&&strcmp(data.slots[2].label,"Signal")==0);
+  assert(data.slots[4].detail==COMPLICATION_DETAIL_PHONE_BATTERY);
+  assert(context_mode(&data,NOW)==CONTEXT_NOTIFICATION);
+  awaiting=true;assert(context_receive(bytes,length,&data,&awaiting,false));
+  assert(data.slots[2].flags==0&&data.slots[2].label[0]==0);
+  assert(context_mode(&data,NOW)==CONTEXT_MUSIC);
   return 0;
 }

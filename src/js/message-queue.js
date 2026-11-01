@@ -9,6 +9,7 @@ module.exports = function createMessageQueue(options) {
   function named(name,fallback) { return String(keys[name] === undefined ? fallback : keys[name]); }
   var complicationKey=named('COMPLICATION_DATA',10021), contextKey=named('CONTEXT_DATA',10023);
   var contextRequestKey=named('REQUEST_CONTEXT',10024);
+  var contextStateKey=named('CONTEXT_STATE',10025);
   function byteArray(value) {
     return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Uint8Array]';
   }
@@ -19,7 +20,8 @@ module.exports = function createMessageQueue(options) {
     if (comp && !context && names.every(function(name) { return name === complicationKey || name === 'COMPLICATION_DATA'; }) &&
         names.every(function(name) { return byteArray(payload[name]); })) { return 'complications'; }
     if (context && !comp && names.every(function(name) {
-      return name === contextKey || name === 'CONTEXT_DATA' || name === contextRequestKey || name === 'REQUEST_CONTEXT';
+      return name === contextKey || name === 'CONTEXT_DATA' || name === contextRequestKey || name === 'REQUEST_CONTEXT' ||
+        name === contextStateKey || name === 'CONTEXT_STATE';
     }) && byteArray(payload[contextKey] === undefined ? payload.CONTEXT_DATA : payload[contextKey])) { return 'context'; }
     // Mixed payloads may contain user settings; they always retain FIFO order.
     return '';

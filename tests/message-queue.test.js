@@ -98,3 +98,17 @@ test('Custom message keys and typed snapshot buffers are supported without mutat
   send({7:pixels,8:3});pixels[0]=99;send({7:new Uint8Array([3,4]),8:4});
   calls[0].success();assert.deepEqual(calls[1].payload,{7:[3,4],8:4});
 });
+
+test('Context playback/event sidecars are copied and superseded atomically with their snapshot',()=>{
+  const f=fixture(),events=[],state=new Uint8Array([7,0,0,0,1,0,0,0,0]);
+  f.send({setting:1});
+  f.send({10023:[1],10025:state},null,error=>events.push(error.code));state[4]=99;
+  f.send({10023:[2],10024:8,10025:[8,0,0,0,0,0,0,0,1]});
+  assert.deepEqual(events,['SUPERSEDED']);f.calls[0].success();
+  assert.deepEqual(f.calls[1].payload,{10023:[2],10024:8,10025:[8,0,0,0,0,0,0,0,1]});
+  const custom=[];
+  const send=createQueue({keys:{CONTEXT_DATA:23,REQUEST_CONTEXT:24,CONTEXT_STATE:40},
+    send:(payload,success)=>custom.push({payload,success}),later:()=>1,cancelLater:()=>{}});
+  send({setting:1});send({23:[1],40:state});send({23:[2],40:new Uint8Array([8,0,0,0,2,0,0,0,0])});
+  custom[0].success();assert.deepEqual(custom[1].payload,{23:[2],40:[8,0,0,0,2,0,0,0,0]});
+});

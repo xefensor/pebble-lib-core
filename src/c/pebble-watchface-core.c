@@ -215,7 +215,17 @@ bool wfc_connection_changed(WatchfaceCore *state, bool phone_connected) {
   return true;
 }
 
-void wfc_context_query(WatchfaceCore *state) { state->context_rebaseline = true; }
+void wfc_context_query(WatchfaceCore *state) {
+  // A phone-side runtime can restart without a Bluetooth transition. Give its
+  // new ephemeral event sequence a new native session rather than confusing
+  // it with an earlier runtime's notification bursts or late request ACKs.
+  state->session_token = context_next_session_token(state->session_token);
+  ++state->connection_generation;
+  state->context_rebaseline = true;
+  state->context_awaiting_baseline = true;
+  memset(&state->context, 0, sizeof(state->context));
+  changed(state);
+}
 
 uint32_t wfc_request_marker(WatchfaceCore *state) {
   state->context_rebaseline_in_flight = state->context_rebaseline;

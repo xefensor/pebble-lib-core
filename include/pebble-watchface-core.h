@@ -56,6 +56,8 @@ bool wfc_receive_context(WatchfaceCore *state, const uint8_t *bytes,
 // Returns true only on a real connection transition. A reconnect advances the
 // session token; the host persists it and schedules its normal startup request.
 bool wfc_connection_changed(WatchfaceCore *state, bool phone_connected);
+// Phone-runtime bootstrap query: rotates the native session and clears private
+// context, even without a Bluetooth transition. The host persists the new token.
 void wfc_context_query(WatchfaceCore *state);
 // Call after an outbox was successfully opened, then report the send result.
 uint32_t wfc_request_marker(WatchfaceCore *state);

@@ -256,12 +256,42 @@ int main(void) {
   assert(context_mode(&state.context, NOW + 120) == CONTEXT_NONE);
   const unsigned events = store.notifications;
   assert(wfc_prune_context(&state, NOW + 120) == 0 && store.notifications == events);
+  const uint32_t before_query = state.session_token;
   wfc_context_query(&state);
-  assert(state.context_rebaseline);
+  assert(state.context_rebaseline && state.context_awaiting_baseline);
+  assert(state.session_token == context_next_session_token(before_query));
   assert(wfc_request_marker(&state) == state.session_token);
   wfc_request_failed(&state);
   wfc_request_acknowledged(&state);
   assert(state.context_rebaseline);
+
+  // A phone runtime may restart while Bluetooth and the face stay active.
+  // Its bootstrap must start a new event epoch and reject an old baseline/ACK.
+  length = notice_packet(bytes);
+  assert(wfc_receive_context(&state, bytes, length, state.session_token));
+  assert(context_mode(&state.context, NOW) == CONTEXT_NOTIFICATION);
+  const uint32_t old_runtime = wfc_request_marker(&state);
+  const uint32_t old_generation = state.connection_generation;
+  wfc_context_query(&state);
+  assert(state.phone_connected && state.connection_generation == old_generation + 1);
+  assert(state.session_token == context_next_session_token(old_runtime));
+  assert(state.context_rebaseline && state.context_awaiting_baseline);
+  assert(context_mode(&state.context, NOW) == CONTEXT_NONE);
+  wfc_request_acknowledged(&state);
+  assert(state.context_rebaseline); // An old-runtime ACK cannot acknowledge the new epoch.
+  assert(wfc_receive_context(&state, bytes, length, old_runtime));
+  assert(state.context_awaiting_baseline);
+  // The old-runtime marked packet cannot reopen the notification gate.
+  assert(context_mode(&state.context, NOW) == CONTEXT_MUSIC);
+  length = fixture("context-v2", bytes);
+  assert(wfc_receive_context(&state, bytes, length, state.session_token));
+  assert(!state.context_awaiting_baseline);
+  assert(wfc_request_marker(&state) == state.session_token);
+  wfc_request_acknowledged(&state);
+  assert(!state.context_rebaseline);
+  length = notice_packet(bytes);
+  assert(wfc_receive_context(&state, bytes, length, 0));
+  assert(context_mode(&state.context, NOW) == CONTEXT_NOTIFICATION);
 
   // Ready -> stale requests once; denied/empty statuses cannot create polling.
   length = fixture("complications-v2", bytes);

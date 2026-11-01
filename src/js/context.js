@@ -4,7 +4,8 @@ var wire = require('./complication-data');
 var KIND = wire.SEMANTIC_KIND;
 var SOURCE = wire.SOURCE_KIND;
 var LEASE = 120;
-var NOTICE_LIFE = 8;
+var NOTICE_SUMMARY_LIFE = 3;
+var NOTICE_MESSAGE_LIFE = 8;
 var NOTICE_QUIET = 3;
 var NOTICE_STABLE_MS = 900;
 var PAUSED_GRACE = 5;
@@ -120,6 +121,7 @@ module.exports = function createContext(options) {
   var notificationIds=Object.create(null);
   var activeNotice=null;
   var noticeWindowEnd=0, lastNoticeAt=0;
+  var burstSequence=0, noticeBurst=0;
   var noticeShownAt=0, pendingNotice=null, noticeUpdateTimer=null;
   var markerNeeded=false, baselineGeneration=0, baselineToken=null;
   var heartbeat=null, expiryTimer=null;
@@ -131,7 +133,8 @@ module.exports = function createContext(options) {
     var value={};
     try { value=options.getSettings() || {}; } catch (ignored) {}
     return {showMusic:value.showMusic !== false,showNotifications:value.showNotifications === true,
-      notificationPreview:value.notificationPreview === true,notificationApps:filterNames(value.notificationApps),
+      notificationPreview:value.notificationPreview === true,notificationAppOnly:value.notificationAppOnly === true,
+      notificationApps:filterNames(value.notificationApps),
       showStatus:value.showStatus !== false};
   }
   function enabled(name) {
@@ -163,10 +166,14 @@ module.exports = function createContext(options) {
   function clearGroup(name) {
     if (name === 'music') { records[0]=records[1]=null; playing=false; pausedUntil=0; }
     else if (name === 'phone') { records[4]=null; }
-    else { clearNotice(); baseline=false; notificationIds=Object.create(null); noticeWindowEnd=lastNoticeAt=0; }
+    else { clearNotice(); baseline=false; notificationIds=Object.create(null); noticeWindowEnd=lastNoticeAt=noticeBurst=0; }
   }
   function markBaseline(token, replaceToken) {
-    if (replaceToken) { baselineToken=tokenOf(token); }
+    if (replaceToken) {
+      var nextToken=tokenOf(token);
+      if (nextToken !== baselineToken) { burstSequence=0; }
+      baselineToken=nextToken;
+    }
     baselineGeneration++;
     markerNeeded=true;
     clearGroup('notifications');
@@ -194,6 +201,15 @@ module.exports = function createContext(options) {
       }
     }
     result[options.keys.CONTEXT_DATA]=wire.packComplications(slots,now());
+    if (options.keys.CONTEXT_STATE !== undefined) {
+      // This sidecar travels atomically with its snapshot. It contains no
+      // provider identity or content, and is never persisted. The native host
+      // must check the session and notification gate before acting on it.
+      var session=baselineToken || 0, event=!markerNeeded && slots[2] ? noticeBurst : 0;
+      var state=[0,0,0,0,0,0,0,0,slots[0] && !playing ? 1 : 0];
+      for (var i=0; i<4; i++) { state[i]=(session >>> (i*8)) & 255; state[i+4]=(event >>> (i*8)) & 255; }
+      result[options.keys.CONTEXT_STATE]=state;
+    }
     return result;
   }
   function cancelDelivery() {
@@ -347,8 +363,8 @@ module.exports = function createContext(options) {
     // notification. Reconnects, errors and settings changes establish it again.
     notificationIds=incoming;
     if (!baseline) { baseline=true; return; }
-    var end=until(envelope,NOTICE_LIFE);
-    if (!end) { clearNotice(); return; }
+    var availableEnd=until(envelope,NOTICE_MESSAGE_LIFE);
+    if (!availableEnd) { clearNotice(); return; }
     for (var i=0; i<candidates.length; i++) {
       var instance=candidates[i], p=instance.properties;
       var app=textOf(p.app), packageName=textOf(p.package);
@@ -356,22 +372,26 @@ module.exports = function createContext(options) {
         settings.notificationApps.indexOf(packageName.trim().toLowerCase())>=0;
       if (!allowed) { continue; }
       var title=clean(textOf(p.name)), appTitle=wire.normalizeText(clean(app),24);
-      var heading=title || clean(app);
+      var heading=settings.notificationAppOnly ? clean(app) || clean(packageName) : title || clean(app);
       if (!heading) { continue; }
+      var body=settings.notificationPreview && !settings.notificationAppOnly ? clean(textOf(p.body)) : '';
+      var end=Math.min(availableEnd,now()+(body ? NOTICE_MESSAGE_LIFE : NOTICE_SUMMARY_LIFE));
       var received=now();
       if (received>=noticeWindowEnd) {
         var quiet=lastNoticeAt === 0 || received-lastNoticeAt>=NOTICE_QUIET;
         lastNoticeAt=received;
-        // A continuous burst gets one bounded interruption, not a new eight
-        // seconds on every message. New arrivals still advance the baseline,
+        // A continuous burst gets one bounded interruption, not another
+        // lifetime on every message. New arrivals still advance the baseline,
         // and a later independent burst can start after a short quiet gap.
         if (!quiet) { break; }
         noticeWindowEnd=end;
+        burstSequence=(burstSequence+1)>>>0 || 1;
+        noticeBurst=burstSequence;
       } else { lastNoticeAt=received; }
       end=Math.min(end,noticeWindowEnd);
       var next={id:keyOf(instance),title:record(heading,pictureOf(p.app_icon,24),end,
-        {kind:KIND.GENERIC,source:SOURCE.NOTIFICATION,label:appTitle}),
-        body:settings.notificationPreview ? record(textOf(p.body),null,end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION}) : null};
+        {kind:KIND.GENERIC,source:SOURCE.NOTIFICATION,label:settings.notificationAppOnly ? '' : appTitle}),
+        body:body ? record(body,null,end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION}) : null};
       // A stable reading interval must never postpone a source redaction.
       var removesPrivateText=fresh(records[3]) && !next.body ||
         !title && fresh(records[2]) && records[2].text !== heading;
@@ -458,6 +478,7 @@ module.exports = function createContext(options) {
       var changed=availabilityChanged || !previous || name === 'music' && previous.showMusic !== settings.showMusic ||
         name === 'phone' && previous.showStatus !== settings.showStatus || name === 'notifications' &&
         (previous.showNotifications !== settings.showNotifications || previous.notificationPreview !== settings.notificationPreview ||
+          previous.notificationAppOnly !== settings.notificationAppOnly ||
           JSON.stringify(previous.notificationApps) !== JSON.stringify(settings.notificationApps));
       if (changed) { clearGroup(name); groups[name].error=''; groups[name].hasData=false; groups[name].receivedAt=null; groups[name].attempt=0; bind(name); }
     });

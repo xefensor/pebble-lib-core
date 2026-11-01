@@ -1,4 +1,4 @@
-# Host contract — 0.3.0
+# Host contract — 0.4.0
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
@@ -46,6 +46,12 @@ A typical host lifecycle is:
    path rather than leaving stale private context visible.
 4. Forward connection transitions through `wfc_connection_changed`. Persist
    an advanced token after reconnect and schedule the host's startup request.
+   A phone-runtime bootstrap query (ordinary `REQUEST_CONTEXT=1`, with no context
+   payload) calls `wfc_context_query`, which also advances the native session,
+   clears context and closes its notification baseline gate. Persist that new
+   token and reset host event tracking before requesting the new baseline. This
+   covers phone JavaScript restarts without a Bluetooth transition; clock-format
+   queries must remain separate and do not rotate the context session.
 5. After opening an outbox, obtain `wfc_request_marker`; report accepted sends,
    immediate/asynchronous failures and successful ACKs through the matching
    `wfc_request_*` functions. These protect a new connection generation from
@@ -67,7 +73,7 @@ or perform those updates after routing an event.
 | --- | --- |
 | Selected complications | First two global choices; at most two hours from confirmed receipt, capped by an earlier source expiry |
 | Music / phone battery | Confirmation lease at most 120 seconds; one-minute phone refresh |
-| New notification | At most eight seconds, retaining original expiry |
+| New notification | Three seconds for app/sender summaries; up to eight seconds when nonempty message text is included; retaining the burst's original expiry |
 | Paused music | Five-second grace period |
 | Context cache | Never persisted; cleared on disconnect or native relaunch |
 | Notification baseline | Existing notifications are not replayed on startup, reconnect or access reconfiguration |
@@ -141,7 +147,45 @@ does not update installed watchfaces.
 
 The notification heading record uses text for sender/title (falling back to app
 only when no sender/title is supplied) and semantic.label for the app name.
+The optional `getSettings().notificationAppOnly` privacy setting instead sends
+only the app name (or package when the app name is absent), an empty app label,
+and no message body. A source with neither app nor package is skipped in this
+mode; private sender text is never used as its fallback. Changing this setting
+retracts the current notice and establishes a new shade baseline.
 Consumers should not split strings on punctuation to recover app identity.
 Text/app identity changes are distinct from bitmap refreshes. Source burst
 coalescing never renews the original interruption deadline; permission and
 session clears cancel pending private updates immediately.
+
+Hosts may opt into an ephemeral playback/event sidecar by supplying
+`keys.CONTEXT_STATE`. It accompanies every `CONTEXT_DATA` snapshot in the same
+dictionary and does not change the version-4 packet format:
+
+| Bytes | Value |
+| --- | --- |
+| 0–3 | Little-endian uint32 native session token; zero until known |
+| 4–7 | Little-endian uint32 notification burst event; zero when no fresh notice is active or while a baseline marker is pending |
+| 8 | Flags: bit0 marks a retained paused music track; all other bits are zero |
+
+A positive event advances only for a new independent allowed notification
+burst. Existing shade history, icon refreshes, changes within that burst,
+music updates, retries and page redraws do not advance it. Event numbers remain
+monotonic across privacy/source rebaselines in one native session and reset
+when a different native session token arrives. They contain no provider
+notification ID or private text and must never be persisted.
+
+Before acting on a sidecar, a native host must validate its exact length and
+flags, match its session to the current native token, and successfully decode
+the accompanying context snapshot. Notification vibration also requires an
+open notification baseline gate and a fresh notification record. The host owns
+the vibration preference and Pebble Quiet Time checks. Consume a new event
+even when vibration is disabled or suppressed by Quiet Time; preserve the last
+consumed event when the sidecar contains zero. This prevents settings changes
+or late artwork from alerting an old notification. Clear event tracking only
+on a native session change. The source feed does not say whether Pebble's
+native notification system already vibrated, so this mechanism cannot dedupe
+against those native alerts.
+
+The shared queue recognizes `CONTEXT_STATE` as part of a pure context snapshot,
+copies its bytes, and replaces it atomically with the corresponding context
+and baseline marker. A host must not queue this sidecar separately.

@@ -6,6 +6,7 @@ const createQueue=require('../src/js/message-queue');
 const NOW=1791893700000;
 const KEY=10023;
 const REQUEST_KEY=10024;
+const STATE_KEY=10025;
 const text=value=>({shortText:{text:value}});
 const music=(playing=true,title='Genesis',artist='Justice',extra={})=>({instances:[{instanceId:'track',properties:{
   title:text(title),artist:text(artist),playing:{boolean:{value:playing}},...extra}}]});
@@ -43,7 +44,7 @@ function fixture(overrides={}) {
   }};
   const subscribe=pebble.subscribeToSource;
   if(overrides.unavailable) delete pebble.subscribeToSource;
-  const options={pebble,keys:{CONTEXT_DATA:KEY,REQUEST_CONTEXT:REQUEST_KEY},getSettings:()=>settings,now:()=>now,
+  const options={pebble,keys:{CONTEXT_DATA:KEY,REQUEST_CONTEXT:REQUEST_KEY,CONTEXT_STATE:STATE_KEY},getSettings:()=>settings,now:()=>now,
     later:(fn,delay)=>{const id=++sequence;timers.set(id,{at:now+delay,fn});return id;},cancelLater:id=>timers.delete(id),
     // Private data must never be persisted by this coordinator.
     storage:{getItem(){throw new Error('No private-content storage');},setItem(){throw new Error('No private-content storage');}},
@@ -60,7 +61,9 @@ function fixture(overrides={}) {
   return {client,settings,timers,subscriptions,deliveries,callbacks,latest,time:()=>now,
     apiAvailable:value=>{if(value)pebble.subscribeToSource=subscribe;else delete pebble.subscribeToSource;},
     source:(name,value)=>latest(name).onData(value),error:(name,code)=>latest(name).onError({code}),
-    packet:()=>decode(deliveries.at(-1)[KEY]),hold:value=>{hold=value;},advance:ms=>{now+=ms;},
+    packet:()=>decode(deliveries.at(-1)[KEY]),state:()=>{const bytes=Buffer.from(deliveries.at(-1)[STATE_KEY]);
+      assert.equal(bytes.length,9);return {session:bytes.readUInt32LE(0),event:bytes.readUInt32LE(4),paused:bytes[8]===1};},
+    hold:value=>{hold=value;},advance:ms=>{now+=ms;},
     tick:ms=>{const end=now+ms;let count=0;for(;;){
       const next=[...timers].filter(([,timer])=>timer.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];
       if(!next)break;assert.ok(++count<2000);now=next[1].at;timers.delete(next[0]);next[1].fn();
@@ -148,7 +151,7 @@ test('Notification baseline suppresses existing shade entries and only newly arr
   f.source('notifications',envelope([notification('new'),existing]));
   assert.equal(f.packet()[2].text,'Alexej');
   assert.equal(f.packet()[3].status,0,'message bodies are hidden by default');
-  assert.equal(f.packet()[2].validUntil,NOW/1000+8);
+  assert.equal(f.packet()[2].validUntil,NOW/1000+3);
   assert.equal(f.client.status().notification,true);
 });
 
@@ -587,4 +590,86 @@ test('Source redaction bypasses coalescing and cannot be undone by a queued priv
   const after=f.deliveries.length;f.tick(2000);
   assert.equal(f.packet()[2].text,'Signal');assert.equal(f.packet()[3].status,0);
   for(const packet of f.deliveries.slice(after)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
+});
+
+test('Notification duration follows delivered content and burst updates retain the original budget',()=>{
+  for(const settings of [{notificationPreview:false},{notificationPreview:true},{notificationPreview:true,notificationAppOnly:true}]) {
+    const f=fixture({settings:{showNotifications:true,...settings}});f.client.refresh(true,41);
+    f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat')]));
+    const life=settings.notificationPreview && !settings.notificationAppOnly ? 8 : 3;
+    assert.equal(f.packet()[2].validUntil,NOW/1000+life);
+    f.tick(1000);f.source('notifications',envelope([notification('chat','Other sender','Signal','A longer message')]));
+    assert.equal(f.packet()[2].validUntil,NOW/1000+life);
+    f.tick((life-1)*1000);assert.equal(f.packet()[2].status,0);assert.equal(f.state().event,0);
+  }
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('empty','Sender','Signal','\n\u200b ')]));
+  assert.equal(f.packet()[3].status,0);assert.equal(f.packet()[2].validUntil,NOW/1000+3);
+  f.tick(1000);f.source('notifications',envelope([notification('empty','Sender','Signal','Later body')]));
+  assert.equal(f.packet()[2].validUntil,NOW/1000+3,'late body cannot extend an existing brief interruption');
+});
+
+test('App-only privacy sends app identity without sender, body or a redundant secondary label',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true,notificationAppOnly:true}});f.client.refresh(true,42);
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat','Private Sender','Signal','Private body')]));
+  assert.equal(f.packet()[2].text,'Signal');assert.equal(f.packet()[2].semantic.label,'');assert.equal(f.packet()[3].status,0);
+  assert.ok(!Buffer.from(f.deliveries.at(-1)[KEY]).includes(Buffer.from('Private')));
+  f.tick(1000);f.source('notifications',envelope([notification('package','Private Sender','','Private body')]));
+  assert.equal(f.packet()[2].text,'org.thoughtcrime.securesms');
+  f.tick(1000);f.source('notifications',envelope([notification('unknown','Private Sender','','Private body',{package:text('')})]));
+  assert.ok(!Buffer.from(f.deliveries.at(-1)[KEY]).includes(Buffer.from('Private')));
+  f.settings.notificationAppOnly=false;f.client.configure();assert.equal(f.packet()[2].status,0);
+  f.source('notifications',envelope([notification('unknown','Private Sender','','Private body',{package:text('')})]));
+  assert.equal(f.packet()[2].status,0,'privacy changes establish a new shade baseline');
+});
+
+test('Context state marks only the retained pause grace and clears at expiry, resume or source removal',()=>{
+  const f=fixture();f.client.refresh(true,43);assert.deepEqual(f.state(),{session:43,event:0,paused:false});
+  f.source('music',music(false));assert.equal(f.state().paused,false);
+  f.source('music',music());assert.equal(f.state().paused,false);
+  f.tick(1000);f.source('music',music(false));assert.equal(f.state().paused,true);
+  f.tick(1000);f.source('phone',battery(10));assert.equal(f.state().paused,true);
+  f.source('music',music());assert.equal(f.state().paused,false);
+  f.source('music',music(false));assert.equal(f.state().paused,true);
+  f.tick(5000);assert.equal(f.state().paused,false);assert.equal(f.packet()[0].status,0);
+  f.source('music',music());f.source('music',music(false));f.source('music',envelope([]));
+  assert.equal(f.state().paused,false);
+});
+
+test('Burst event identities are scoped to the native session and ignore history, artwork, redraws and continuous updates',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true,notificationApps:'Signal'}});f.client.refresh(true,44);
+  assert.deepEqual(f.state(),{session:44,event:0,paused:false});
+  f.source('notifications',envelope([notification('old')]));assert.equal(f.state().event,0);
+  f.source('notifications',envelope([notification('no','Sender','Other')]));assert.equal(f.state().event,0);
+  f.source('notifications',envelope([notification('chat')]));assert.equal(f.state().event,1);
+  const shape={width:1,height:1,palette:Buffer.from([0,255]).toString('base64'),pixels:Buffer.from([0x10]).toString('base64')};
+  f.tick(1000);f.source('notifications',envelope([notification('chat','Alexej','Signal','Dinner in ten minutes',{app_icon:{icon:shape}})]));
+  assert.equal(f.state().event,1);f.source('music',music());f.source('phone',battery(5));f.client.configure();
+  assert.equal(f.state().event,1);
+  for(let i=1;i<=8;i++) {
+    f.tick(1000);f.source('notifications',envelope([notification('chat','Sender','Signal','Message'+i)]));
+    assert.equal(f.state().event,i<7 ? 1 : 0);
+  }
+  f.tick(3000);f.source('notifications',envelope([notification('chat','Sender','Signal','New independent burst')]));
+  assert.equal(f.state().event,2);
+  f.error('notifications','PERMISSION_DENIED');assert.equal(f.state().event,0);
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('next')]));
+  assert.equal(f.state().event,3,'source rebaseline cannot reuse an event number within the same session');
+  f.client.connectionChanged(false);f.client.connectionChanged(true,45);assert.equal(f.state().event,0);
+  f.source('notifications',envelope([notification('offline')]));assert.equal(f.state().event,0);
+  f.source('notifications',envelope([notification('online'),notification('offline')]));
+  assert.deepEqual(f.state(),{session:45,event:1,paused:false});
+});
+
+test('Context sidecars remain paired with boundary retries and the latest queued content',()=>{
+  const f=fixture({queue:true,settings:{showNotifications:true,notificationPreview:true}});f.hold(true);f.client.refresh(true,46);
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('fresh')]));
+  assert.equal(f.state().event,0);assert.equal(f.packet()[2].status,0);
+  f.callbacks[0].failure();assert.equal(f.state().event,0);assert.equal(f.state().session,46);
+  f.callbacks.at(-1).success();
+  assert.equal(f.state().event,1);assert.equal(f.packet()[3].text,'Dinner in ten minutes');
+  const active=f.callbacks.at(-1);f.source('music',music());f.source('music',music(false));
+  f.client.connectionChanged(true,47);f.source('music',music(true,'Latest'));
+  active.success();assert.equal(f.state().session,47);assert.equal(f.state().event,0);
+  assert.equal(f.state().paused,false);assert.equal(f.packet()[0].text,'Latest');assert.equal(f.packet()[2].status,0);
 });

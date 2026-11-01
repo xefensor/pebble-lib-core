@@ -1,4 +1,4 @@
-# Host contract — 0.4.0
+# Host contract — 0.4.1
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
@@ -156,6 +156,11 @@ Consumers should not split strings on punctuation to recover app identity.
 Text/app identity changes are distinct from bitmap refreshes. Source burst
 coalescing never renews the original interruption deadline; permission and
 session clears cancel pending private updates immediately.
+Every source snapshot revalidates active and queued notices even when their
+instance IDs remain present. Malformed or fully redacted properties, an unusable
+heading, or an app identity that no longer matches the filter immediately
+retracts the old text and cancels its queued update. Restoring valid content
+within the same burst does not renew its deadline or create another event.
 
 Hosts may opt into an ephemeral playback/event sidecar by supplying
 `keys.CONTEXT_STATE`. It accompanies every `CONTEXT_DATA` snapshot in the same

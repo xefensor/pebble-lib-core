@@ -339,18 +339,34 @@ module.exports = function createContext(options) {
       (numeric.unit === undefined || numeric.unit === '%') && end ? record(Math.round(level)+'%',null,end,
         {kind:KIND.BATTERY,source:SOURCE.PHONE,detail:wire.DETAIL_KIND.PHONE_BATTERY,value:level,min:0,max:100,unit:'%'}) : null;
   }
+  function notificationContent(instance) {
+    var p=object(instance) && instance.properties;
+    if (!object(p)) { return null; }
+    var app=textOf(p.app), packageName=textOf(p.package);
+    var allowed=!settings.notificationApps.length || settings.notificationApps.indexOf(app.trim().toLowerCase())>=0 ||
+      settings.notificationApps.indexOf(packageName.trim().toLowerCase())>=0;
+    var title=clean(textOf(p.name)), appTitle=wire.normalizeText(clean(app),24);
+    var heading=settings.notificationAppOnly ? clean(app) || clean(packageName) : title || clean(app);
+    if (!allowed || !heading) { return null; }
+    return {title:title,appTitle:appTitle,heading:heading,
+      body:settings.notificationPreview && !settings.notificationAppOnly ? clean(textOf(p.body)) : ''};
+  }
   function notificationData(envelope) {
-    var incoming=Object.create(null), candidates=[], activeInstance=null, deferred=false;
+    var incoming=Object.create(null), candidates=[], activeInstance=null, pendingInstance=null, deferred=false;
     envelope.instances.forEach(function(instance) {
       var id=keyOf(instance);
       if (id === null || incoming[id]) { return; }
       incoming[id]=object(instance.properties) ? fingerprintOf(instance) : 'invalid';
       if (id === activeNotice) { activeInstance=instance; }
+      if (pendingNotice && id === pendingNotice.id) { pendingInstance=instance; }
       if (baseline && notificationIds[id] !== incoming[id] && object(instance.properties)) { candidates.push(instance); }
     });
     if (envelope.instances.length && !Object.keys(incoming).length) { return false; }
-    if (activeNotice && !incoming[activeNotice]) { clearNotice(); }
-    if (pendingNotice && !incoming[pendingNotice.id]) {
+    // A retained source ID does not mean its earlier private content is still
+    // available. Full redaction, malformed properties and a newly excluded app
+    // must clear both visible and queued text before the stable-reading delay.
+    if (activeNotice && !notificationContent(activeInstance)) { clearNotice(); }
+    if (pendingNotice && !notificationContent(pendingInstance)) {
       pendingNotice=null;
       if (noticeUpdateTimer !== null) { options.cancelLater(noticeUpdateTimer); noticeUpdateTimer=null; }
     }
@@ -367,14 +383,9 @@ module.exports = function createContext(options) {
     if (!availableEnd) { clearNotice(); return; }
     for (var i=0; i<candidates.length; i++) {
       var instance=candidates[i], p=instance.properties;
-      var app=textOf(p.app), packageName=textOf(p.package);
-      var allowed=!settings.notificationApps.length || settings.notificationApps.indexOf(app.trim().toLowerCase())>=0 ||
-        settings.notificationApps.indexOf(packageName.trim().toLowerCase())>=0;
-      if (!allowed) { continue; }
-      var title=clean(textOf(p.name)), appTitle=wire.normalizeText(clean(app),24);
-      var heading=settings.notificationAppOnly ? clean(app) || clean(packageName) : title || clean(app);
-      if (!heading) { continue; }
-      var body=settings.notificationPreview && !settings.notificationAppOnly ? clean(textOf(p.body)) : '';
+      var content=notificationContent(instance);
+      if (!content) { continue; }
+      var title=content.title, appTitle=content.appTitle, heading=content.heading, body=content.body;
       var end=Math.min(availableEnd,now()+(body ? NOTICE_MESSAGE_LIFE : NOTICE_SUMMARY_LIFE));
       var received=now();
       if (received>=noticeWindowEnd) {

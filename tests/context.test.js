@@ -592,6 +592,77 @@ test('Source redaction bypasses coalescing and cannot be undone by a queued priv
   for(const packet of f.deliveries.slice(after)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
 });
 
+test('Retained notification IDs clear visible private text when properties become invalid or fully redacted',()=>{
+  const redactions=[undefined,null,[],{},
+    {name:text(''),body:text(''),app:text(''),package:text('')},
+    {name:text('\u200b '),body:text('Retained body without a usable heading'),app:text(' '),package:text('')}];
+  for(const notificationAppOnly of [false,true]) for(const properties of redactions) {
+    const f=fixture({settings:{showNotifications:true,notificationPreview:true,notificationAppOnly}});
+    f.client.refresh(true,51);f.source('notifications',envelope([]));
+    f.source('notifications',envelope([notification('chat','Private sender','Signal','Private body')]));
+    assert.equal(f.packet()[2].status,2);
+    f.tick(100);const before=f.deliveries.length;
+    f.source('notifications',envelope([{instanceId:'chat',properties}]));
+    assert.equal(f.packet()[2].status,0);assert.equal(f.packet()[3].status,0);
+    assert.equal(f.state().event,0);assert.equal(f.client.status().notification,false);
+    f.tick(2000);
+    for(const packet of f.deliveries.slice(before)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
+  }
+});
+
+test('The current source app identity must still match the filter for active and queued notices',()=>{
+  for(const filter of ['Signal','org.thoughtcrime.securesms']) for(const queued of [false,true]) {
+    const f=fixture({settings:{showNotifications:true,notificationPreview:true,notificationApps:filter}});
+    f.client.refresh(true,52);f.source('notifications',envelope([]));
+    const active=notification('active','Safe sender','Signal','Safe body');
+    f.source('notifications',envelope([active]));
+    if(queued) {
+      f.tick(100);f.source('notifications',envelope([notification('queued','Private sender','Signal','Private body'),active]));
+    }
+    f.tick(100);const before=f.deliveries.length;
+    const blocked=notification(queued ? 'queued' : 'active','Private sender','Other app','Private body',{
+      package:text('org.other.application')});
+    f.source('notifications',envelope(queued ? [blocked,active] : [blocked]));
+    assert.equal(f.packet()[2].text,queued ? 'Safe sender' : '');
+    assert.equal(f.packet()[3].text,queued ? 'Safe body' : '');
+    f.tick(2000);
+    for(const packet of f.deliveries.slice(before)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
+  }
+});
+
+test('A queued private notification cannot appear after its retained source ID is fully redacted',()=>{
+  for(const properties of [undefined,null,[],{},
+    {name:text(''),body:text(''),app:text(''),package:text('')}]) for(const sameId of [false,true]) {
+    const f=fixture({settings:{showNotifications:true,notificationPreview:true}});
+    f.client.refresh(true,53);f.source('notifications',envelope([]));
+    const active=notification('active','Safe sender','Signal','Safe body');
+    f.source('notifications',envelope([active]));
+    const queuedId=sameId ? 'active' : 'queued';
+    f.tick(100);f.source('notifications',envelope([notification(queuedId,'Private sender','Signal','Private queued body'),
+      ...(sameId ? [] : [active])]));
+    assert.equal(f.packet()[2].text,'Safe sender','the private update is still queued');
+    f.tick(100);const before=f.deliveries.length;
+    f.source('notifications',envelope([{instanceId:queuedId,properties},...(sameId ? [] : [active])]));
+    f.tick(700); // The original stable-reading deadline must not reveal it.
+    assert.equal(f.packet()[2].text,sameId ? '' : 'Safe sender');
+    assert.equal(f.packet()[3].text,sameId ? '' : 'Safe body');
+    f.tick(2000);
+    for(const packet of f.deliveries.slice(before)) assert.ok(!Buffer.from(packet[KEY]).includes(Buffer.from('Private')));
+  }
+});
+
+test('Redaction and valid recovery retain the original burst and do not renew its lease',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});
+  f.client.refresh(true,54);f.source('notifications',envelope([]));
+  f.source('notifications',envelope([notification('chat')]));
+  const deadline=f.packet()[2].validUntil, event=f.state().event;
+  f.tick(100);f.source('notifications',envelope([{instanceId:'chat',properties:{}}]));
+  assert.equal(f.packet()[2].status,0);assert.equal(f.state().event,0);
+  f.tick(1000);f.source('notifications',envelope([notification('chat','Restored sender','Signal','Restored body')]));
+  assert.equal(f.packet()[2].text,'Restored sender');assert.equal(f.packet()[3].text,'Restored body');
+  assert.equal(f.packet()[2].validUntil,deadline);assert.equal(f.state().event,event);
+});
+
 test('Notification duration follows delivered content and burst updates retain the original budget',()=>{
   for(const settings of [{notificationPreview:false},{notificationPreview:true},{notificationPreview:true,notificationAppOnly:true}]) {
     const f=fixture({settings:{showNotifications:true,...settings}});f.client.refresh(true,41);

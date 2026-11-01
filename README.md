@@ -1,7 +1,7 @@
 # Pebble Watchface Core
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.4.0 adds
+and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.4.1 adds
 content-aware notification deadlines, app-only privacy and transient event/playback
 metadata while preserving precise reading identity and honest expiry states.
 It targets Emery (Pebble Time 2).
@@ -31,7 +31,13 @@ wire format still contains five bounded records for compatibility. It does not
 supply a weather provider, timer integration or playback controls. Source
 availability and permissions remain the Pebble phone app's responsibility.
 
-## Version 0.4.0
+## Version 0.4.1
+
+- Fully redacted, malformed or newly filtered notifications clear active text immediately.
+- Queued notification replacements are revalidated against each source snapshot, so a private preview cannot appear after its source has been redacted.
+- Burst timing, notification privacy choices and the v4 wire format remain unchanged.
+
+## Historical version 0.4.0
 
 - A new notification burst gets at most three seconds for a summary/app-only
   banner or eight seconds for an actual nonempty message preview, capped by an
@@ -90,14 +96,14 @@ availability and permissions remain the Pebble phone app's responsibility.
 - Notification bursts are bounded to eight seconds; baseline/session privacy and
   five-second paused-music grace are retained.
 
-Dynamic adopts 0.4.0 independently. Halftone continues to bundle 0.1.0
+Dynamic adopts 0.4.1 independently. Halftone continues to bundle 0.1.0
 until it is rebuilt against a separately checked upgrade. No installed
 watchface is changed by updating this repository.
 
 ## Use from a watchface
 
 Consumers pin an independently selected release tarball, such as
-`vendor/pebble-watchface-core-0.4.0.tgz`, reference it with a `file:` dependency,
+`vendor/pebble-watchface-core-0.4.1.tgz`, reference it with a `file:` dependency,
 and commit `package-lock.json`. `vendor/CORE.json` records the upstream version
 and archive checksum. This supports `npm ci` without an npm publishing account
 or a dependency on a changing Git branch.

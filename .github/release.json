@@ -1,0 +1,20 @@
+{
+  "repository": "xefensor/pebble-watchface-core",
+  "kind": "core",
+  "display_name": "Pebble Watchface Core",
+  "tag_prefix": "v",
+  "prerelease": false,
+  "assets": [
+    "dist.zip",
+    "releases/pebble-watchface-core-{version}.tgz"
+  ],
+  "checksums_file": "releases/SHA256SUMS.txt",
+  "notes": {
+    "path": "README.md",
+    "heading": "## Version {version}"
+  },
+  "bootstrap": {
+    "version": "0.4.1",
+    "source_commit": "6a6fb32e5a52d146e60d32fd6ee1b92e67722ada"
+  }
+}

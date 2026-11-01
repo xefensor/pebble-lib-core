@@ -31,6 +31,7 @@ void wfc_clear_cache(WatchfaceCore *state) {
 static bool save_cache(WatchfaceCore *state) {
   const WfcStorage *storage = &state->config.storage;
   if (storage->write == NULL || storage->remove == NULL) { return false; }
+  if (!state->complication_packet_length) { return false; }
   const size_t count = (state->complication_packet_length + WFC_CACHE_CHUNK_BYTES - 1) /
       WFC_CACHE_CHUNK_BYTES;
   // Commit the header chunk last; torn writes cannot revive a mixed snapshot.
@@ -51,6 +52,52 @@ static bool save_cache(WatchfaceCore *state) {
   return true;
 }
 
+// Persist values and semantic metadata, never large bitmap payloads. This
+// keeps the original eight 256-byte keys and original freshness provenance.
+// Incoming bytes have already passed the complete decoder before this copy.
+static size_t cache_packet(const uint8_t *input, size_t length, uint8_t *output,
+                           size_t capacity) {
+  // Legacy live snapshots remain readable, but their unknown source identity
+  // cannot establish that a value is safe to persist.
+  if (input[0] != 3) return 0;
+  const size_t header = complications_record_header_bytes(input[0]);
+  if (capacity < COMPLICATION_HEADER_BYTES) return 0;
+  memmove(output, input, COMPLICATION_HEADER_BYTES);
+  size_t from = COMPLICATION_HEADER_BYTES, to = COMPLICATION_HEADER_BYTES;
+  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+    const uint8_t *record = input + from;
+    const unsigned flags = record[0];
+    const size_t text = record[2];
+    const size_t metadata = input[0] == 3 ? record[22] + record[23] : 0;
+    const size_t bitmap = flags & COMPLICATION_FLAG_BITMAP
+        ? COMPLICATION_PALETTE_BYTES + complications_u16(record + 14) : 0;
+    const size_t retained = header + text + metadata;
+    const size_t next = from + retained + bitmap;
+    if (next > length || to + retained > capacity) return 0;
+    const bool private_source = record[24] == COMPLICATION_SOURCE_MUSIC ||
+                                record[24] == COMPLICATION_SOURCE_NOTIFICATION;
+    if (private_source || (record[1] == COMPLICATION_STATUS_READY &&
+        !(flags & (COMPLICATION_FLAG_TEXT | COMPLICATION_FLAG_TIMESTAMP)))) {
+      // Private sources never persist. Image-only readings have no cached value.
+      memset(output + to, 0, header);
+      output[to + 1] = COMPLICATION_STATUS_UNAVAILABLE;
+      to += header;
+    } else {
+      memmove(output + to, record, retained);
+      output[to] &= ~(COMPLICATION_FLAG_BITMAP | COMPLICATION_FLAG_IMAGE);
+      output[to + 3] = output[to + 4] = 0;
+      output[to + 14] = output[to + 15] = 0;
+      to += retained;
+    }
+    from = next;
+  }
+  if (from != length || to > UINT16_MAX) return 0;
+  output[2] = (uint8_t)to; output[3] = (uint8_t)(to >> 8);
+  const uint16_t crc = complications_crc16(output, to);
+  output[4] = (uint8_t)crc; output[5] = (uint8_t)(crc >> 8);
+  return to;
+}
+
 bool wfc_load_cache(WatchfaceCore *state, time_t now) {
   const WfcStorage *storage = &state->config.storage;
   if (storage->size == NULL || storage->read == NULL) { return false; }
@@ -59,8 +106,16 @@ bool wfc_load_cache(WatchfaceCore *state, time_t now) {
   if (first_length < COMPLICATION_HEADER_BYTES || first_length > WFC_CACHE_CHUNK_BYTES ||
       storage->read(storage->context, first_key, state->complication_packet,
                     WFC_CACHE_CHUNK_BYTES) != first_length) { return false; }
+  if (state->complication_packet[0] != 3) {
+    state->has_complications = false; state->complication_packet_length = 0;
+    memset(&state->complications, 0, sizeof(state->complications));
+    memset(state->was_fresh, 0, sizeof(state->was_fresh));
+    memset(state->complication_packet, 0, sizeof(state->complication_packet));
+    wfc_clear_cache(state);
+    return false;
+  }
   const size_t length = complications_u16(state->complication_packet + 2);
-  if (length < COMPLICATION_HEADER_BYTES || length > COMPLICATION_MAX_BYTES ||
+  if (length < COMPLICATION_HEADER_BYTES || length > WFC_CACHE_BYTES ||
       first_length != (int)(length < WFC_CACHE_CHUNK_BYTES ? length : WFC_CACHE_CHUNK_BYTES)) {
     return false;
   }
@@ -74,8 +129,21 @@ bool wfc_load_cache(WatchfaceCore *state, time_t now) {
                       state->complication_packet + offset, chunk) != (int)chunk) { return false; }
   }
   if (!complications_read(state->complication_packet, length, &state->complications)) { return false; }
+  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+    if (state->complications.slots[i].source_kind == COMPLICATION_SOURCE_MUSIC ||
+        state->complications.slots[i].source_kind == COMPLICATION_SOURCE_NOTIFICATION) {
+      state->has_complications = false; state->complication_packet_length = 0;
+      memset(state->was_fresh, 0, sizeof(state->was_fresh));
+      memset(&state->complications, 0, sizeof(state->complications));
+      memset(state->complication_packet, 0, sizeof(state->complication_packet));
+      wfc_clear_cache(state);
+      return false;
+    }
+  }
   state->has_complications = true;
   state->complication_packet_length = length;
+  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i)
+    state->complications.slots[i].cached = state->complications.slots[i].status == COMPLICATION_STATUS_READY;
   record_freshness(state, now);
   changed(state);
   return true;
@@ -85,10 +153,11 @@ bool wfc_receive_complications(WatchfaceCore *state, const uint8_t *bytes,
                                size_t length, time_t now) {
   if (length <= COMPLICATION_MAX_BYTES && complications_read(bytes, length, &state->complications)) {
     state->has_complications = true;
-    state->complication_packet_length = length;
-    memcpy(state->complication_packet, bytes, length);
+    state->complication_packet_length = cache_packet(bytes, length, state->complication_packet,
+                                                    sizeof(state->complication_packet));
     record_freshness(state, now);
-    save_cache(state);
+    if (state->complication_packet_length) save_cache(state);
+    else wfc_clear_cache(state);
     changed(state);
     return true;
   }
@@ -118,6 +187,18 @@ bool wfc_connection_changed(WatchfaceCore *state, bool phone_connected) {
   state->context_rebaseline = true;
   state->context_awaiting_baseline = true;
   memset(&state->context, 0, sizeof(state->context));
+  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+    ComplicationSlot *slot = &state->complications.slots[i];
+    // Legacy live values have no source identity. Treat those unknown values
+    // conservatively alongside known private sources across connections.
+    if (complication_is_selected(slot) &&
+        (slot->source_kind == COMPLICATION_SOURCE_GENERIC ||
+         slot->source_kind == COMPLICATION_SOURCE_MUSIC ||
+         slot->source_kind == COMPLICATION_SOURCE_NOTIFICATION)) {
+      memset(slot, 0, sizeof(*slot)); slot->status = COMPLICATION_STATUS_UNAVAILABLE;
+      state->was_fresh[i] = false;
+    }
+  }
   if (phone_connected) { state->session_token = context_next_session_token(state->session_token); }
   changed(state);
   return true;
@@ -157,8 +238,8 @@ uint32_t wfc_prune_context(WatchfaceCore *state, time_t now) {
   bool pruned = false;
   for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
     if (!context_slot_fresh(&state->context.slots[i], now)) {
-      const ComplicationSlot empty = {0};
-      if (memcmp(&state->context.slots[i], &empty, sizeof(empty)) != 0) { pruned = true; }
+      if (!complications_zero((const uint8_t *)&state->context.slots[i],
+                              sizeof(state->context.slots[i]))) { pruned = true; }
       memset(&state->context.slots[i], 0, sizeof(state->context.slots[i]));
     }
   }

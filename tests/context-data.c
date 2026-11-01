@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 #include "../include/context_data.h"
 
@@ -147,5 +148,15 @@ int main(void) {
   assert(!context_phone_battery(&data.slots[4], NOW, NULL));
   bytes[50] ^= 1;
   assert(!context_read(bytes, 106, &data));
+
+  FILE *v3 = fopen("tests/fixtures/context-v3.bin", "rb"); assert(v3);
+  length = fread(bytes, 1, sizeof(bytes), v3); fclose(v3);
+  assert(context_read(bytes,length,&data));
+  assert(data.slots[0].pixel_bytes == 800 && data.slots[0].text_length > 48);
+  assert(context_mode(&data,NOW) == CONTEXT_NOTIFICATION);
+  awaiting = true;
+  assert(context_receive(bytes,length,&data,&awaiting,false));
+  assert(data.slots[2].flags == 0 && data.slots[3].flags == 0);
+  assert(context_mode(&data,NOW) == CONTEXT_MUSIC);
   return 0;
 }

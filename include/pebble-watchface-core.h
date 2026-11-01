@@ -5,6 +5,7 @@
 
 #define WFC_CACHE_CHUNKS 8
 #define WFC_CACHE_CHUNK_BYTES 256
+#define WFC_CACHE_BYTES (WFC_CACHE_CHUNKS * WFC_CACHE_CHUNK_BYTES)
 #define WFC_REFRESH_SECONDS (30 * 60)
 
 typedef struct {
@@ -30,7 +31,7 @@ typedef struct {
   bool has_complications;
   bool phone_connected;
   bool was_fresh[COMPLICATION_SLOT_COUNT];
-  uint8_t complication_packet[COMPLICATION_MAX_BYTES];
+  uint8_t complication_packet[WFC_CACHE_BYTES];
   size_t complication_packet_length;
   bool context_rebaseline;
   bool context_awaiting_baseline;

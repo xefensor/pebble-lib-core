@@ -1,8 +1,11 @@
 'use strict';
 
 var wire = require('./complication-data');
+var KIND = wire.SEMANTIC_KIND;
+var SOURCE = wire.SOURCE_KIND;
 var LEASE = 120;
-var NOTICE_LIFE = 12;
+var NOTICE_LIFE = 8;
+var NOTICE_QUIET = 3;
 var PAUSED_GRACE = 5;
 var HEARTBEAT = 60000;
 var MAX_EPOCH = 4294967295;
@@ -24,7 +27,7 @@ function textOf(value) {
 }
 function clean(value) {
   return wire.normalizeText(typeof value === 'string' ? value.slice(0,4096)
-    .replace(/[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g,' ') : '');
+    .replace(/[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g,' ') : '',128);
 }
 function codeOf(error) {
   return error && typeof error.code === 'string' && /^[A-Z0-9_]{1,48}$/.test(error.code) ? error.code : 'UNKNOWN';
@@ -47,10 +50,11 @@ function bytesOf(value, max) {
 }
 // The source bitmap has tightly packed rows; the existing watch packet uses
 // four-byte aligned rows. Do not assume that every source returns a 24px square.
-function bitmapOf(shape,image) {
+function bitmapOf(shape,image,maxSize) {
+  maxSize=maxSize || 24;
   if (!object(shape) || !Number.isInteger(shape.width) || !Number.isInteger(shape.height) ||
-      shape.width<1 || shape.width>24 || shape.height<1 || shape.height>24) { return null; }
-  var palette=bytesOf(shape.palette,16), source=bytesOf(shape.pixels,288);
+      shape.width<1 || shape.width>maxSize || shape.height<1 || shape.height>maxSize) { return null; }
+  var palette=bytesOf(shape.palette,16), source=bytesOf(shape.pixels,Math.ceil(maxSize/2)*maxSize);
   var sourceStride=Math.ceil(shape.width/2), stride=((shape.width+7)>>3)*4;
   if (!palette || !palette.length || !source || source.length !== sourceStride*shape.height) { return null; }
   var pixels=[];
@@ -64,8 +68,8 @@ function bitmapOf(shape,image) {
   }
   return {width:shape.width,height:shape.height,palette:palette,pixels:pixels,image:image};
 }
-function pictureOf(property) {
-  return object(property) ? bitmapOf(property.image,true) || bitmapOf(property.icon,false) : null;
+function pictureOf(property,maxSize) {
+  return object(property) ? bitmapOf(property.image,true,maxSize) || bitmapOf(property.icon,false,maxSize) : null;
 }
 function keyOf(instance) {
   return object(instance) && typeof instance.instanceId === 'string' && instance.instanceId.length>0 &&
@@ -102,7 +106,7 @@ module.exports = function createContext(options) {
   var pebble=options.pebble || {};
   var groups={};
   Object.keys(DEFINITIONS).forEach(function(name) {
-    groups[name]={handle:null,generation:0,error:'',hasData:false,recovery:null,attempt:0};
+    groups[name]={handle:null,generation:0,error:'',hasData:false,receivedAt:null,recovery:null,attempt:0};
   });
   var settings=null;
   var connected=true;
@@ -114,6 +118,7 @@ module.exports = function createContext(options) {
   var baseline=false;
   var notificationIds=Object.create(null);
   var activeNotice=null;
+  var noticeWindowEnd=0, lastNoticeAt=0;
   var markerNeeded=false, baselineGeneration=0, baselineToken=null;
   var heartbeat=null, expiryTimer=null;
   var pending=false, sending=false, deliveryTimer=null, deliveryGeneration=0;
@@ -142,10 +147,10 @@ module.exports = function createContext(options) {
     }
     return end>now() && end<=MAX_EPOCH ? end : 0;
   }
-  function record(text, bitmap, end) {
+  function record(text, bitmap, end, semantic) {
     text=clean(text);
     return (text || bitmap) && end>now() ? {status:2,text:text,bitmap:bitmap || undefined,
-      confirmedAt:now(),validUntil:end} : null;
+      confirmedAt:now(),validUntil:end,semantic:semantic} : null;
   }
   function clearNotice() {
     records[2]=records[3]=null;
@@ -154,7 +159,7 @@ module.exports = function createContext(options) {
   function clearGroup(name) {
     if (name === 'music') { records[0]=records[1]=null; playing=false; pausedUntil=0; }
     else if (name === 'phone') { records[4]=null; }
-    else { clearNotice(); baseline=false; notificationIds=Object.create(null); }
+    else { clearNotice(); baseline=false; notificationIds=Object.create(null); noticeWindowEnd=lastNoticeAt=0; }
   }
   function markBaseline(token, replaceToken) {
     if (replaceToken) { baselineToken=tokenOf(token); }
@@ -200,7 +205,7 @@ module.exports = function createContext(options) {
       if (generation !== deliveryGeneration || stopped || !connected) { return; }
       var sentRevision=revision, sentBaselineGeneration=baselineGeneration, sentToken=baselineToken;
       var sentMarker=markerNeeded && sentToken !== null && options.keys.REQUEST_CONTEXT !== undefined, done=false;
-      function finish(ok) {
+      function finish(ok,error) {
         if (done || generation !== deliveryGeneration) { return; }
         done=true;
         // Only this baseline's acknowledged boundary can release its marker.
@@ -211,7 +216,7 @@ module.exports = function createContext(options) {
         }
         if (deliveryTimer !== null) { options.cancelLater(deliveryTimer); }
         deliveryTimer=null;
-        if (!ok && !pending && revision === sentRevision && number<3) {
+        if (!ok && (!error || error.code !== 'SUPERSEDED') && !pending && revision === sentRevision && number<3) {
           deliveryTimer=options.later(function() { deliveryTimer=null; attempt(number+1); },number*1000);
           return;
         }
@@ -221,13 +226,14 @@ module.exports = function createContext(options) {
       // The shared transport can wait behind another bounded transfer. Its
       // own watchdog owns a stuck native send; leave room for that queue here.
       deliveryTimer=options.later(function() { finish(false); },45000);
-      try { options.send(payload(),function() { finish(true); },function() { finish(false); }); }
+      try { options.send(payload(),function() { finish(true); },function(error) { finish(false,error); }); }
       catch (ignored) { finish(false); }
     }
     attempt(1);
   }
   function publish() {
     revision++;
+    if (options.send.supersedesSnapshots && sending) { cancelDelivery(); }
     pending=true;
     pump();
     scheduleExpiry();
@@ -280,6 +286,7 @@ module.exports = function createContext(options) {
     else if (name === 'phone') { valid=phoneData(envelope); }
     else { valid=notificationData(envelope); }
     if (valid === false) { sourceError(name,{code:'INVALID_DATA'}); return; }
+    groups[name].receivedAt=now();
     publish();
   }
   function musicData(envelope) {
@@ -296,8 +303,8 @@ module.exports = function createContext(options) {
       if (!pausedUntil || now()>=pausedUntil) { clearGroup('music'); return; }
       end=Math.min(end,pausedUntil);
     }
-    records[0]=record(title,pictureOf(p.artwork),end);
-    records[1]=record(textOf(p.artist),null,end);
+    records[0]=record(title,pictureOf(p.artwork,40),end,{kind:KIND.GENERIC,source:SOURCE.MUSIC});
+    records[1]=record(textOf(p.artist),null,end,{kind:KIND.GENERIC,source:SOURCE.MUSIC});
   }
   function phoneData(envelope) {
     if (!envelope.instances.length) { records[4]=null; return; }
@@ -309,7 +316,8 @@ module.exports = function createContext(options) {
     if (!object(p) || property !== undefined && (!object(numeric) || !finite(level) || level<0 || level>100 ||
         numeric.unit !== undefined && numeric.unit !== '%') || !end) { return false; }
     records[4]=finite(level) && level>=0 && level<=15 &&
-      (numeric.unit === undefined || numeric.unit === '%') && end ? record(Math.round(level)+'%',null,end) : null;
+      (numeric.unit === undefined || numeric.unit === '%') && end ? record(Math.round(level)+'%',null,end,
+        {kind:KIND.BATTERY,source:SOURCE.PHONE,value:level,min:0,max:100,unit:'%'}) : null;
   }
   function notificationData(envelope) {
     var incoming=Object.create(null), candidates=[];
@@ -336,8 +344,19 @@ module.exports = function createContext(options) {
       var title=clean(textOf(p.name)), appTitle=clean(app);
       var heading=appTitle && title && appTitle !== title ? appTitle+' · '+title : title || appTitle;
       if (!heading) { continue; }
-      records[2]=record(heading,pictureOf(p.app_icon),end);
-      records[3]=settings.notificationPreview ? record(textOf(p.body),null,end) : null;
+      var received=now();
+      if (received>=noticeWindowEnd) {
+        var quiet=lastNoticeAt === 0 || received-lastNoticeAt>=NOTICE_QUIET;
+        lastNoticeAt=received;
+        // A continuous burst gets one bounded interruption, not a new eight
+        // seconds on every message. New arrivals still advance the baseline,
+        // and a later independent burst can start after a short quiet gap.
+        if (!quiet) { break; }
+        noticeWindowEnd=end;
+      } else { lastNoticeAt=received; }
+      end=Math.min(end,noticeWindowEnd);
+      records[2]=record(heading,pictureOf(p.app_icon,24),end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION});
+      records[3]=settings.notificationPreview ? record(textOf(p.body),null,end,{kind:KIND.GENERIC,source:SOURCE.NOTIFICATION}) : null;
       activeNotice=keyOf(instance);
       break; // The native source orders instances newest first.
     }
@@ -360,7 +379,7 @@ module.exports = function createContext(options) {
     // loaded. Neither old handles nor an old notification baseline survive it.
     Object.keys(groups).forEach(function(name) {
       close(name); clearGroup(name);
-      groups[name].error=''; groups[name].hasData=false; groups[name].attempt=0;
+      groups[name].error=''; groups[name].hasData=false; groups[name].receivedAt=null; groups[name].attempt=0;
     });
     return true;
   }
@@ -371,7 +390,7 @@ module.exports = function createContext(options) {
     var request={category:definition.category,item:definition.item,properties:definition.properties.slice(),
       onData:function(envelope) { if (generation === group.generation && !stopped && connected) { sourceData(name,envelope); } },
       onError:function(error) { if (generation === group.generation && !stopped && connected) { sourceError(name,error); } }};
-    if (name !== 'phone') { request.iconPixelSize={w:24,h:24}; }
+    if (name !== 'phone') { request.iconPixelSize=name === 'music' ? {w:40,h:40} : {w:24,h:24}; }
     try {
       var handle=pebble.subscribeToSource(request);
       if (generation === group.generation && !stopped && connected) { group.handle=handle; }
@@ -405,7 +424,7 @@ module.exports = function createContext(options) {
         name === 'phone' && previous.showStatus !== settings.showStatus || name === 'notifications' &&
         (previous.showNotifications !== settings.showNotifications || previous.notificationPreview !== settings.notificationPreview ||
           JSON.stringify(previous.notificationApps) !== JSON.stringify(settings.notificationApps));
-      if (changed) { clearGroup(name); groups[name].error=''; groups[name].hasData=false; groups[name].attempt=0; bind(name); }
+      if (changed) { clearGroup(name); groups[name].error=''; groups[name].hasData=false; groups[name].receivedAt=null; groups[name].attempt=0; bind(name); }
     });
     publish(); scheduleHeartbeat();
   }
@@ -426,7 +445,7 @@ module.exports = function createContext(options) {
     if (!value) {
       connected=false;
       baselineToken=null;
-      Object.keys(groups).forEach(function(name) { close(name); clearGroup(name); groups[name].error=''; groups[name].hasData=false; groups[name].attempt=0; });
+      Object.keys(groups).forEach(function(name) { close(name); clearGroup(name); groups[name].error=''; groups[name].hasData=false; groups[name].receivedAt=null; groups[name].attempt=0; });
       cancelDelivery();
       if (heartbeat !== null) { options.cancelLater(heartbeat); }
       if (expiryTimer !== null) { options.cancelLater(expiryTimer); }
@@ -435,14 +454,31 @@ module.exports = function createContext(options) {
   }
   return {refresh:refresh,configure:configure,connectionChanged:connectionChanged,
     status:function() {
-      var sources={}, error='';
+      var sources={}, sourceStates={}, error='';
       Object.keys(groups).forEach(function(name) { sources[name]=groups[name].error; });
       Object.keys(groups).some(function(name) { if (enabled(name) && groups[name].error) { error=groups[name].error; return true; } return false; });
       if (!available && Object.keys(groups).some(enabled)) { error='API_UNAVAILABLE'; }
       var ready=!!settings && connected && (available || !Object.keys(groups).some(enabled)) &&
         Object.keys(groups).every(function(name) { return !enabled(name) || groups[name].hasData; });
+      Object.keys(groups).forEach(function(name) {
+        var group=groups[name], state='ready', message=group.error;
+        if (!enabled(name)) { state='off'; message=''; }
+        else if (!connected || !available) { state='unavailable'; message=!connected ? 'DISCONNECTED' : 'API_UNAVAILABLE'; }
+        else if (group.error) { state=group.error === 'PERMISSION_DENIED' ? 'denied' : 'unavailable'; }
+        else if (!group.hasData) { state='waiting'; }
+        else if (name === 'music') {
+          if (fresh(records[0])) { state=playing ? 'playing' : 'paused'; }
+          else if (playing) { state='unavailable'; message='SOURCE_EXPIRED'; }
+          else { state='idle'; }
+        } else if (name === 'phone' && group.receivedAt !== null && now()-group.receivedAt>=LEASE) {
+          state='unavailable'; message='SOURCE_EXPIRED';
+        } else if (name === 'notifications' && !fresh(records[2])) { state='idle'; }
+        sourceStates[name]={state:state,message:message,receivedAt:group.receivedAt,
+          receivedAgeSec:group.receivedAt === null ? null : Math.max(0,now()-group.receivedAt),
+          observedAt:null,observationAgeSec:null};
+      });
       return {available:available,connected:connected,ready:ready,error:error,music:!!fresh(records[0]),notification:!!fresh(records[2]),
-        phoneBattery:!!fresh(records[4]),sources:sources};
+        phoneBattery:!!fresh(records[4]),sources:sources,sourceStates:sourceStates};
     },
     stop:function() {
       Object.keys(groups).forEach(function(name) { close(name); clearGroup(name); });

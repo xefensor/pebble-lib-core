@@ -1,9 +1,9 @@
 # Pebble Watchface Core
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.1.0 is the
-first extraction from Halftone's C / PebbleKit JS implementation, targeting Emery
-(Pebble Time 2).
+and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version 0.2.0 extends the original
+Halftone extraction with richer reading metadata, longer international text and
+40px artwork, targeting Emery (Pebble Time 2).
 
 The package is compiled into each watchface's PBW. Users install a watchface;
 there is no separate core app or background service to install. A core update
@@ -15,7 +15,7 @@ reaches users when a consuming watchface is rebuilt and released.
   normalized scalar/image values and bounded receipt caches.
 - Music title, artist, playing state and artwork; optional new-notification
   summaries; low phone battery.
-- Serialized phone-to-watch messages, v2 packet validation, freshness and
+- Serialized phone-to-watch messages, v3 packets with strict v1/v2 decoding, freshness and
   expiry, native cache chunks and reconnect/session bookkeeping.
 - Notification baselines and privacy clearing. Music/notification content
   stays transient and is not persisted or logged by this core.
@@ -25,15 +25,42 @@ colors, animations, clock/date presentation, settings form, UUID, permissions
 and release files. The core registers no Pebble SDK services or AppMessage
 callbacks; the host supplies one dispatcher and forwards relevant events.
 
-This is an initial two-reading contract, not a general widget framework. The
+This is a bounded two-reading contract, not a general widget framework. The
 wire format still contains five bounded records for compatibility. It does not
 supply a weather provider, timer integration or playback controls. Source
 availability and permissions remain the Pebble phone app's responsibility.
 
+## Version 0.2.0
+
+- Text is bounded to 128 UTF-8 bytes per record, with separate unit and short-label
+  fields. Provider-formatted values remain available alongside numeric metadata.
+- Optional semantic/source identifiers, numeric value, range and unit let a
+  consumer identify battery, humidity, rain and other readings without guessing
+  from a percentage string. Missing or invalid metadata is never invented.
+- Images can be up to 40×40, 4bpp with a 16-entry palette. Source support still
+  determines available artwork detail.
+- Version-3 packets are bounded to 5,186 bytes. Hosts should open at least a
+  6,144-byte inbox. Decoders still strictly accept legacy versions 1 and 2.
+- Native persistent caching retains eight 256-byte keys. Cache compaction strips
+  images, preserves value/metadata/receipt/expiry and never renews freshness.
+  Restored values carry a native-cache-origin flag, not an observation timestamp.
+  Music/notification categories are excluded even when selected as normal readings.
+  Legacy native caches without source identity are cleared once during upgrade;
+  legacy live packet decoding remains supported.
+- Pending complication/context snapshots supersede older waiting snapshots in
+  their own channel. Settings and other commands keep FIFO ordering. Superseded
+  callbacks receive SUPERSEDED rather than a false acknowledgement.
+- Notification bursts are bounded to eight seconds; baseline/session privacy and
+  five-second paused-music grace are retained.
+
+Dynamic adopts this version independently. Halftone continues to bundle 0.1.0
+until it is rebuilt against a separately checked upgrade. No installed
+watchface is changed by updating this repository.
+
 ## Use from a watchface
 
-The consumer projects pin the same release tarball in
-`vendor/pebble-watchface-core-0.1.0.tgz`, reference it with a `file:` dependency,
+Consumers pin an independently selected release tarball, such as
+`vendor/pebble-watchface-core-0.2.0.tgz`, reference it with a `file:` dependency,
 and commit `package-lock.json`. `vendor/CORE.json` records the upstream version
 and archive checksum. This supports `npm ci` without an npm publishing account
 or a dependency on a changing Git branch.

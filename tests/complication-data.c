@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 #include "../include/complication_data.h"
 
@@ -219,7 +220,7 @@ int main(void) {
     add(&packet, 15, COMPLICATION_STATUS_READY, text, 48, 24, 24, UINT32_MAX);
   }
   finish(&packet);
-  assert(packet.length == COMPLICATION_MAX_BYTES);
+  assert(packet.length == 1866);
   assert(complications_read(packet.bytes, packet.length, &result));
   assert(result.slots[4].text[48] == '\0' && strlen(result.slots[4].text) == 48);
   assert(result.slots[4].bitmap[287] == (uint8_t)(287 + 0x12));
@@ -390,5 +391,56 @@ int main(void) {
   put32(changed.bytes + 12, UINT32_MAX - 7201);
   reseal(&changed);
   assert_bad(&changed);
+
+  // Independent v3 JS golden fixtures exercise full metadata, float64,
+  // 128-byte international text, 40px bitmap and the exact worst-case size.
+  const char *v3files[] = {"complications-v3", "context-v3", "maximum-v3"};
+  for (unsigned which = 0; which < 3; ++which) {
+    char path[96]; snprintf(path, sizeof(path), "tests/fixtures/%s.bin", v3files[which]);
+    FILE *file = fopen(path, "rb"); assert(file);
+    packet.length = fread(packet.bytes, 1, sizeof(packet.bytes), file); fclose(file);
+    assert(packet.bytes[0] == 3 && complications_read(packet.bytes, packet.length, &result));
+    size_t at = 6;
+    for (unsigned i = 0; i < 5; ++i) {
+      packet.records[i] = at;
+      const uint8_t *r = packet.bytes + at;
+      at += 52 + r[2] + r[22] + r[23] + ((r[0] & 2) ? 16 + complications_u16(r+14) : 0);
+    }
+    assert(at == packet.length);
+    if (which == 0) {
+      assert(strcmp(result.slots[0].text, "5°C") == 0);
+      assert(result.slots[0].semantic_kind == COMPLICATION_SEMANTIC_TEMPERATURE);
+      assert(result.slots[0].source_kind == COMPLICATION_SOURCE_WEATHER);
+      assert(result.slots[0].semantic_flags == 7);
+      assert(result.slots[0].numeric_value == 5.125 && result.slots[0].minimum == -4.5 && result.slots[0].maximum == 12.25);
+      assert(strcmp(result.slots[0].unit, "°C") == 0 && strcmp(result.slots[0].label, "Teplota") == 0);
+      const unsigned bad_offsets[] = {20,21,22,23,24,25,26,27};
+      const uint8_t bad_values[] = {12,8,17,25,6,1,1,1};
+      for (unsigned j = 0; j < sizeof(bad_offsets)/sizeof(*bad_offsets); ++j) {
+        changed=packet; changed.bytes[6+bad_offsets[j]]=bad_values[j]; reseal(&changed); assert_bad(&changed);
+      }
+      changed=packet; // Signaling/quiet NaN and infinity are never native values.
+      memset(changed.bytes+6+28,0,8); changed.bytes[6+34]=0xf0; changed.bytes[6+35]=0x7f;
+      reseal(&changed); assert_bad(&changed);
+      changed.bytes[6+34]=0xf8; reseal(&changed); assert_bad(&changed);
+      changed=packet; changed.bytes[6+21]=0; reseal(&changed); assert_bad(&changed); // hidden numeric bytes
+      changed=packet; memcpy(changed.bytes+6+36,changed.bytes+6+44,8); // min=max
+      reseal(&changed); assert(complications_read(changed.bytes,changed.length,NULL));
+      changed=packet; memcpy(changed.bytes+6+36,packet.bytes+6+44,8);
+      memcpy(changed.bytes+6+44,packet.bytes+6+36,8); reseal(&changed); assert_bad(&changed); // min>max
+      changed=packet; changed.bytes[6+52+packet.bytes[8]]=0x01; reseal(&changed); assert_bad(&changed); // unit control
+      changed=packet; changed.bytes[packet.records[4]+20]=1; reseal(&changed); assert_bad(&changed); // nonready semantic
+    } else if (which == 1) {
+      assert(result.slots[0].text_length > 48 && result.slots[0].text_length <= 128);
+      assert(result.slots[0].width == 40 && result.slots[0].pixel_bytes == 800);
+      assert(result.slots[1].text_length == 128);
+      changed=packet; changed.bytes[6+3]=41; reseal(&changed); assert_bad(&changed);
+    } else {
+      assert(packet.length == COMPLICATION_MAX_BYTES);
+      assert(strlen(result.slots[4].text) == 128 && strlen(result.slots[4].unit) == 16 && strlen(result.slots[4].label) == 24);
+      for (size_t cut=0; cut<packet.length; ++cut) assert(!complications_read(packet.bytes,cut,NULL));
+      changed=packet; changed.bytes[packet.records[4]+2]=129; reseal(&changed); assert_bad(&changed);
+    }
+  }
   return 0;
 }

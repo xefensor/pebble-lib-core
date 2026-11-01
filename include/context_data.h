@@ -46,6 +46,7 @@ static inline bool context_read(const uint8_t *bytes, size_t length,
                                  ComplicationSet *result) {
   if (!complications_read(bytes, length, NULL)) { return false; }
   size_t at = COMPLICATION_HEADER_BYTES;
+  const size_t header = complications_record_header_bytes(bytes[0]);
   for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
     const uint8_t *record = bytes + at;
     const uint8_t flags = record[0];
@@ -65,7 +66,7 @@ static inline bool context_read(const uint8_t *bytes, size_t length,
       if (i == 4) {
         if (text_length < 2 || text_length > 3) { return false; }
         unsigned value = 0;
-        const uint8_t *text = record + COMPLICATION_RECORD_HEADER_BYTES;
+        const uint8_t *text = record + header;
         for (unsigned j = 0; j + 1 < text_length; ++j) {
           if (text[j] < '0' || text[j] > '9') { return false; }
           value = value * 10 + (unsigned)(text[j] - '0');
@@ -73,7 +74,7 @@ static inline bool context_read(const uint8_t *bytes, size_t length,
         if (text[text_length - 1] != '%' || value > 15) { return false; }
       }
     }
-    at += COMPLICATION_RECORD_HEADER_BYTES + text_length +
+    at += header + text_length + (bytes[0] == 3 ? record[22] + record[23] : 0) +
         ((flags & COMPLICATION_FLAG_BITMAP) ? COMPLICATION_PALETTE_BYTES + pixels : 0);
   }
   return complications_read(bytes, length, result);

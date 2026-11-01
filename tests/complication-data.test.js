@@ -10,7 +10,7 @@ function decode(packet) {
   assert.ok(Array.isArray(packet));
   assert.ok(packet.every(byte=>Number.isInteger(byte)&&byte>=0&&byte<=255));
   const b=Buffer.from(packet);
-  assert.equal(b[0],2);
+  assert.equal(b[0],3);
   assert.equal(b[1],0);
   assert.equal(b.readUInt16LE(2),b.length);
   const check=[...packet]; check[4]=check[5]=0;
@@ -23,8 +23,12 @@ function decode(packet) {
     const pixelBytes=b.readUInt16LE(at+14);
     const slot={flags,status,textLength,width,height,displayKind:b[at+5],confirmedAt:b.readUInt32LE(at+6),
       validUntil:b.readUInt32LE(at+10),pixelBytes,timestamp:b.readUInt32LE(at+16)};
-    at+=20;
+    const unitLength=b[at+22],labelLength=b[at+23];
+    slot.semantic={kind:b[at+20],flags:b[at+21],source:b[at+24],value:b.readDoubleLE(at+28),min:b.readDoubleLE(at+36),max:b.readDoubleLE(at+44)};
+    at+=52;
     slot.text=b.subarray(at,at+textLength).toString('utf8'); at+=textLength;
+    slot.semantic.unit=b.subarray(at,at+unitLength).toString('utf8');at+=unitLength;
+    slot.semantic.label=b.subarray(at,at+labelLength).toString('utf8');at+=labelLength;
     if(flags&2) {
       slot.palette=[...b.subarray(at,at+16)];at+=16;
       slot.pixels=[...b.subarray(at,at+pixelBytes)];at+=pixelBytes;
@@ -55,7 +59,7 @@ test('Five implicit slots preserve holes and non-ready statuses without retainin
     for(const key of ['textLength','width','height','confirmedAt','validUntil','pixelBytes','timestamp']) assert.equal(slots[i][key],0);
   }
   assert.ok(!Buffer.from(packet).toString().includes('secret'));
-  assert.equal(packComplications(null,NOW).length,106);
+  assert.equal(packComplications(null,NOW).length,266);
 });
 
 test('READY timing is exclusive, bounded to two hours, and never wraps unsigned timestamps',()=>{
@@ -107,32 +111,33 @@ test('A zero event is cleared without invalidating independent text or other rea
   assert.equal(slots[2].timestamp,NOW+600);
 });
 
+const legacyText = value => normalizeText(value,48);
 test('Text normalization preserves UTF8 scalars, repairs surrogates and removes native-invalid controls',()=>{
-  assert.equal(normalizeText('  A\n\tB\u0000\u007f\u0085\u2028\u2029C  '),'A B C');
-  assert.equal(normalizeText('\uD800X\uDC00'),'\uFFFDX\uFFFD');
-  assert.equal(normalizeText('界'.repeat(17)),'界'.repeat(15)+'…');
-  assert.equal(normalizeText('😀'.repeat(13)),'😀'.repeat(11)+'…');
-  assert.equal(normalizeText('a'.repeat(47)+'😀'),'a'.repeat(45)+'…');
-  assert.equal(normalizeText(null),'');
-  assert.equal(normalizeText(0),'');
-  const slot=decode(packComplications([ready({text:'界'.repeat(17)})],NOW))[0];
-  assert.equal(slot.textLength,48);
-  assert.equal(slot.text,'界'.repeat(15)+'…');
+  assert.equal(legacyText('  A\n\tB\u0000\u007f\u0085\u2028\u2029C  '),'A B C');
+  assert.equal(legacyText('\uD800X\uDC00'),'\uFFFDX\uFFFD');
+  assert.equal(legacyText('界'.repeat(17)),'界'.repeat(15)+'…');
+  assert.equal(legacyText('😀'.repeat(13)),'😀'.repeat(11)+'…');
+  assert.equal(legacyText('a'.repeat(47)+'😀'),'a'.repeat(45)+'…');
+  assert.equal(legacyText(null),'');
+  assert.equal(legacyText(0),'');
+  const slot=decode(packComplications([ready({text:'界'.repeat(43)})],NOW))[0];
+  assert.equal(slot.textLength,126);
+  assert.equal(slot.text,'界'.repeat(41)+'…');
   assert.equal(slot.text.includes('\uFFFD'),false);
 });
 
 test('Overlong text reserves a true ellipsis and remains stable when normalized for replay',()=>{
   for(const source of ['a'.repeat(49),'界'.repeat(17),'😀'.repeat(13),'a'.repeat(44)+' bcde']) {
-    const bounded=normalizeText(source);
+    const bounded=legacyText(source);
     assert.ok(bounded.endsWith('…'));
     assert.ok(Buffer.byteLength(bounded,'utf8')<=48);
-    assert.equal(normalizeText(bounded),bounded,'persisted bounded text must not gain another ellipsis');
+    assert.equal(legacyText(bounded),bounded,'persisted bounded text must not gain another ellipsis');
     assert.equal(bounded.includes(' …'),false,'do not retain an incomplete trailing word separator');
   }
-  assert.equal(normalizeText('a'.repeat(48)),'a'.repeat(48));
-  assert.equal(normalizeText('a'.repeat(48)+' \n\t'),'a'.repeat(48));
-  assert.equal(normalizeText('界'.repeat(16)),'界'.repeat(16));
-  assert.equal(normalizeText('a'.repeat(45)+'…'),'a'.repeat(45)+'…');
+  assert.equal(legacyText('a'.repeat(48)),'a'.repeat(48));
+  assert.equal(legacyText('a'.repeat(48)+' \n\t'),'a'.repeat(48));
+  assert.equal(legacyText('界'.repeat(16)),'界'.repeat(16));
+  assert.equal(legacyText('a'.repeat(45)+'…'),'a'.repeat(45)+'…');
 });
 
 test('Bitmap geometry uses padded4bpp rows and pads a valid short palette to16 bytes',()=>{
@@ -151,7 +156,7 @@ test('Bitmap geometry uses padded4bpp rows and pads a valid short palette to16 b
 
 test('Invalid bitmap geometry/pixels are omitted while independent text remains usable',()=>{
   const good={width:1,height:1,palette:[0,192],pixels:[0x10,0,0,0]};
-  for(const bitmap of [{...good,width:0},{...good,width:25},{...good,height:1.5},{...good,height:25},
+  for(const bitmap of [{...good,width:0},{...good,width:41},{...good,height:1.5},{...good,height:41},
     {...good,palette:[]},{...good,palette:Array(17).fill(0)},{...good,palette:[0,256]},
     {...good,pixels:[0x10]},{...good,pixels:[0x10,0,NaN,0]},{...good,pixels:[0x10,0,-1,0]}]) {
     const slots=decode(packComplications([ready({text:'valid',bitmap}),ready({bitmap})],NOW));
@@ -178,14 +183,14 @@ test('Visible bitmap indices use the original palette while unused row padding i
   assert.equal(slots[3].status,2,'odd-row low nibbles and row padding are not visible');
 });
 
-test('Five maximum records fit1866 bytes without truncation, overflow or input mutation',()=>{
-  const bitmap={width:24,height:24,palette:Array.from({length:16},(_,i)=>i),pixels:Array(288).fill(0x21),image:true};
-  const inputs=Array.from({length:5},()=>ready({text:'x'.repeat(48),bitmap,unknown:'never encoded'}));
+test('Five maximum records fit5186 bytes without truncation, overflow or input mutation',()=>{
+  const bitmap={width:40,height:40,palette:Array.from({length:16},(_,i)=>i),pixels:Array(800).fill(0x21),image:true};
+  const inputs=Array.from({length:5},()=>ready({text:'x'.repeat(128),bitmap,semantic:{kind:1,source:1,value:12.25,min:-20,max:40,unit:'u'.repeat(16),label:'l'.repeat(24)},unknown:'never encoded'}));
   const before=JSON.stringify(inputs);
   const packet=packComplications(inputs,NOW);
-  assert.equal(packet.length,1866);
+  assert.equal(packet.length,5186);
   const slots=decode(packet);
-  assert.ok(slots.every(slot=>slot.textLength===48&&slot.pixelBytes===288&&slot.flags===7));
+  assert.ok(slots.every(slot=>slot.textLength===128&&slot.pixelBytes===800&&slot.flags===7));
   assert.equal(JSON.stringify(inputs),before);
   assert.equal(Buffer.from(packet).toString().includes('never encoded'),false);
 });
@@ -203,4 +208,31 @@ test('V2 semantic hint is explicit and never appears on generic percentages or n
     {status:4,text:'private',displayKind:1}],NOW));
   assert.deepEqual(slots.map(slot=>slot.displayKind),[1,0,0,0,0]);
   assert.deepEqual(slots.map(slot=>slot.text),['40%','78%','0%','','']);
+});
+
+test('V3 preserves128-byte international music and explicit numeric semantics without rewriting formatted text',()=>{
+  const text='Колесом / '.repeat(12);
+  const input=ready({text,semantic:{kind:1,source:1,value:12.125,min:-20.25,max:40.5,unit:'°C',label:'Teplota'}});
+  const slot=decode(packComplications([input],NOW))[0];
+  assert.ok(slot.textLength>48&&slot.textLength<=128);
+  assert.equal(slot.text,normalizeText(text));
+  assert.deepEqual(slot.semantic,{kind:1,flags:7,source:1,value:12.125,min:-20.25,max:40.5,unit:'°C',label:'Teplota'});
+  assert.equal(normalizeText('x'.repeat(128)),'x'.repeat(128));
+  assert.equal(normalizeText('x'.repeat(129)),'x'.repeat(125)+'…');
+  const metadataBefore=JSON.stringify(input.semantic);
+  packComplications([input],NOW);
+  assert.equal(JSON.stringify(input.semantic),metadataBefore);
+});
+
+test('Invalid optional semantic values cannot corrupt otherwise usable provider text',()=>{
+  for(const semantic of [{kind:12},{source:6},{value:Infinity},{value:NaN},{min:2,max:1},
+    {unit:'untruthfully long unit'},{unit:7},{label:{}},{value:'12'},{kind:'temperature'}]) {
+    const slot=decode(packComplications([ready({text:'Provider 12.3 °C',semantic})],NOW))[0];
+    assert.equal(slot.text,'Provider 12.3 °C');assert.equal(slot.status,2);
+    assert.equal(slot.semantic.kind,0);assert.equal(slot.semantic.flags,0);
+    assert.equal(slot.semantic.unit,'');assert.equal(slot.semantic.label,'');
+  }
+  const slot=decode(packComplications([ready({text:'1',semantic:{value:1e300,min:-1e300,max:1e300,label:'界'.repeat(20)}})],NOW))[0];
+  assert.equal(slot.semantic.value,1e300);assert.equal(slot.semantic.min,-1e300);
+  assert.ok(Buffer.byteLength(slot.semantic.label)<=24);assert.ok(slot.semantic.label.endsWith('…'));
 });

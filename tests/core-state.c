@@ -83,19 +83,23 @@ static void seal(uint8_t *bytes, size_t length) {
 }
 static size_t maximum_packet(uint8_t *bytes) {
   memset(bytes, 0, COMPLICATION_MAX_BYTES);
-  bytes[0] = 2;
+  bytes[0] = 3;
   size_t at = COMPLICATION_HEADER_BYTES;
   for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
     uint8_t *record = bytes + at;
     record[0] = COMPLICATION_FLAG_TEXT | COMPLICATION_FLAG_BITMAP | COMPLICATION_FLAG_IMAGE;
     record[1] = COMPLICATION_STATUS_READY;
     record[2] = COMPLICATION_MAX_TEXT_BYTES;
-    record[3] = record[4] = 24;
+    record[3] = record[4] = 40;
     put32(record + 6, NOW);
     put32(record + 10, NOW + 1800);
     put16(record + 14, COMPLICATION_MAX_BITMAP_BYTES);
-    memset(record + 20, 'X', COMPLICATION_MAX_TEXT_BYTES);
-    record[20 + COMPLICATION_MAX_TEXT_BYTES] = 0xc0;
+    record[20] = COMPLICATION_SEMANTIC_TEMPERATURE; record[24] = COMPLICATION_SOURCE_WEATHER;
+    record[22] = 16; record[23] = 24;
+    memset(record + 52, 'X', COMPLICATION_MAX_TEXT_BYTES);
+    memset(record + 52 + COMPLICATION_MAX_TEXT_BYTES, 'u', 16);
+    memset(record + 52 + COMPLICATION_MAX_TEXT_BYTES + 16, 'L', 24);
+    record[52 + COMPLICATION_MAX_TEXT_BYTES + 40] = 0xc0;
     at += COMPLICATION_MAX_SLOT_BYTES;
   }
   assert(at == COMPLICATION_MAX_BYTES);
@@ -135,7 +139,8 @@ int main(void) {
   uint8_t bytes[COMPLICATION_MAX_BYTES];
   size_t length = fixture("complications-v2", bytes);
   assert(wfc_receive_complications(&state, bytes, length, NOW));
-  assert(state.has_complications && state.complication_packet_length == length);
+  assert(state.has_complications && state.complication_packet_length == 0);
+  assert(store.write_count == 0);
   assert(strcmp(state.complications.slots[0].text, "6°C") == 0);
   assert(strcmp(state.complications.slots[1].text, "73%") == 0);
   assert(state.complications.slots[1].display_kind == COMPLICATION_DISPLAY_PRECIPITATION);
@@ -143,6 +148,11 @@ int main(void) {
   assert(!state.was_fresh[2] && store.notifications == 1);
 
   WatchfaceCore reopened;
+  wfc_init(&reopened, &config, false, state.session_token);
+  assert(!wfc_load_cache(&reopened,NOW)); // Live legacy decode never writes unknown-source cache.
+  reset_store(&store);
+  length=maximum_packet(bytes);
+  assert(wfc_receive_complications(&state,bytes,length,NOW));
   wfc_init(&reopened, &config, false, state.session_token);
   assert(wfc_load_cache(&reopened, NOW + 100));
   assert(reopened.session_token == 3 && reopened.has_complications);
@@ -159,16 +169,26 @@ int main(void) {
   reset_store(&store);
   length = maximum_packet(bytes);
   assert(wfc_receive_complications(&state, bytes, length, NOW));
-  assert(store.write_count == WFC_CACHE_CHUNKS);
-  for (unsigned i = 0; i < WFC_CACHE_CHUNKS - 1; ++i) { assert(store.writes[i] == i + 1); }
-  assert(store.writes[WFC_CACHE_CHUNKS - 1] == 0);
+  const unsigned chunks = (state.complication_packet_length + 255) / 256;
+  assert(chunks <= WFC_CACHE_CHUNKS && store.write_count == chunks);
+  for (unsigned i = 0; i < chunks - 1; ++i) { assert(store.writes[i] == i + 1); }
+  assert(store.writes[chunks - 1] == 0);
   wfc_init(&reopened, &config, true, 3);
   assert(wfc_load_cache(&reopened, NOW + 1));
-  assert(memcmp(reopened.complication_packet, bytes, length) == 0);
-  assert(reopened.complication_packet_length == length);
+  assert(reopened.complication_packet_length < length && reopened.complication_packet_length <= WFC_CACHE_BYTES);
+  assert(reopened.complications.slots[0].cached && !state.complications.slots[0].cached);
+  assert(state.complications.slots[0].pixel_bytes == 800);
+  assert(reopened.complications.slots[0].pixel_bytes == 0);
+  assert(strlen(reopened.complications.slots[0].text) == 128);
+  assert(strlen(reopened.complications.slots[0].unit) == 16);
+  assert(strlen(reopened.complications.slots[0].label) == 24);
+  assert(reopened.complications.slots[0].confirmed_at == NOW);
+  assert(reopened.complications.slots[0].valid_until == NOW + 1800);
+  assert(wfc_receive_complications(&reopened, bytes, length, NOW + 1));
+  assert(!reopened.complications.slots[0].cached && reopened.complications.slots[0].pixel_bytes == 800);
 
   // Interrupted writes erase every cache chunk rather than reviving mixed data.
-  for (unsigned fail = 1; fail <= WFC_CACHE_CHUNKS; ++fail) {
+  for (unsigned fail = 1; fail <= chunks; ++fail) {
     reset_store(&store);
     store.fail_write = fail;
     assert(wfc_receive_complications(&state, bytes, length, NOW));
@@ -264,5 +284,104 @@ int main(void) {
   assert(reopened.has_complications);
   assert(!wfc_receive_complications(&reopened, NULL, 0, NOW));
   wfc_clear_cache(&reopened);
+
+  // Numeric metadata and provider formatting survive image-free persistence.
+  const uint32_t v3now = 1793433600;
+  reset_store(&store);
+  length = fixture("complications-v3",bytes);
+  assert(wfc_receive_complications(&state,bytes,length,v3now));
+  wfc_init(&reopened,&config,true,0);
+  assert(wfc_load_cache(&reopened,v3now+1));
+  assert(reopened.complications.slots[0].cached);
+  assert(reopened.complications.slots[0].semantic_kind == COMPLICATION_SEMANTIC_TEMPERATURE);
+  assert(reopened.complications.slots[0].numeric_value == 5.125);
+  assert(reopened.complications.slots[0].minimum == -4.5 && reopened.complications.slots[0].maximum == 12.25);
+  assert(strcmp(reopened.complications.slots[0].unit,"°C") == 0);
+  assert(strcmp(reopened.complications.slots[0].label,"Teplota") == 0);
+  assert(strcmp(reopened.complications.slots[0].text,"5°C") == 0);
+  assert(reopened.complications.slots[0].confirmed_at == v3now && reopened.complications.slots[0].valid_until == v3now+1800);
+
+  // Image-only cached readings become explicitly unavailable; no fabricated
+  // value/semantic-only READY record survives bitmap removal.
+  reset_store(&store);
+  length = fixture("image-only-v3", bytes);
+  assert(wfc_receive_complications(&state,bytes,length,v3now));
+  assert(state.complications.slots[0].pixel_bytes == 800);
+  wfc_init(&reopened,&config,true,0);
+  assert(wfc_load_cache(&reopened,v3now+1));
+  assert(reopened.complications.slots[0].status == COMPLICATION_STATUS_UNAVAILABLE);
+  assert(reopened.complications.slots[0].flags == 0 && !reopened.complications.slots[0].cached);
+
+  // A mixed private/public live snapshot keeps the selected weather cached,
+  // but no music or notification bytes/metadata reach persistent storage.
+  reset_store(&store);
+  wfc_init(&state,&config,true,0);
+  length=maximum_packet(bytes);
+  const size_t private_at=6+COMPLICATION_MAX_SLOT_BYTES;
+  bytes[private_at+24]=COMPLICATION_SOURCE_MUSIC;
+  memcpy(bytes+private_at+52,"PRIVATE-MUSIC-CONTENT",21);
+  bytes[6+2*COMPLICATION_MAX_SLOT_BYTES+24]=COMPLICATION_SOURCE_NOTIFICATION;
+  memcpy(bytes+6+2*COMPLICATION_MAX_SLOT_BYTES+52,"PRIVATE-NOTICE-CONTENT",22);
+  seal(bytes,length);
+  assert(wfc_receive_complications(&state,bytes,length,NOW));
+  assert(state.complications.slots[1].flags != 0); // Live display remains available.
+  for(size_t at=0;at+22<=state.complication_packet_length;++at) {
+    assert(memcmp(state.complication_packet+at,"PRIVATE-MUSIC-CONTENT",21)!=0);
+    assert(memcmp(state.complication_packet+at,"PRIVATE-NOTICE-CONTENT",22)!=0);
+  }
+  wfc_init(&reopened,&config,true,0);
+  assert(wfc_load_cache(&reopened,NOW+1));
+  assert(reopened.complications.slots[0].status==COMPLICATION_STATUS_READY);
+  assert(reopened.complications.slots[0].cached && reopened.complications.slots[0].confirmed_at==NOW);
+  for(unsigned i=1;i<=2;++i) {
+    assert(reopened.complications.slots[i].status==COMPLICATION_STATUS_UNAVAILABLE);
+    assert(reopened.complications.slots[i].text[0]==0 && reopened.complications.slots[i].source_kind==0);
+  }
+  // Known weather remains available across disconnect, but selected private
+  // records are immediately erased and cannot reappear on reconnect.
+  assert(wfc_connection_changed(&state,false));
+  assert(state.complications.slots[0].status==COMPLICATION_STATUS_READY);
+  assert(state.complications.slots[1].status==COMPLICATION_STATUS_UNAVAILABLE && state.complications.slots[1].text[0]==0);
+  assert(state.complications.slots[2].status==COMPLICATION_STATUS_UNAVAILABLE && state.complications.slots[2].text[0]==0);
+  assert(wfc_connection_changed(&state,true));
+  assert(state.complications.slots[1].flags==0);
+
+  // A CRC-correct externally supplied v3 cache with a private source is
+  // rejected too; filtering is not limited to the normal write path.
+  length=maximum_packet(bytes);
+  bytes[6+24]=COMPLICATION_SOURCE_MUSIC; seal(bytes,length);
+  // Drop images in a valid live transfer, then adversarially mark one cached
+  // public record private to model an older buggy writer.
+  bytes[6+24]=COMPLICATION_SOURCE_WEATHER; seal(bytes,length);
+  reset_store(&store); assert(wfc_receive_complications(&state,bytes,length,NOW));
+  memcpy(bytes,state.complication_packet,state.complication_packet_length);
+  length=state.complication_packet_length; bytes[6+24]=COMPLICATION_SOURCE_MUSIC; seal(bytes,length);
+  reset_store(&store);
+  for(size_t at=0,index=0;at<length;at+=256,++index) {
+    const size_t part=length-at<256?length-at:256;
+    memcpy(store.bytes[index],bytes+at,part);store.length[index]=(int)part;
+  }
+  wfc_init(&reopened,&config,true,0);
+  assert(!wfc_load_cache(&reopened,NOW));
+  for(unsigned i=0;i<WFC_CACHE_CHUNKS;++i) assert(store.length[i]==-1);
+  assert(!reopened.has_complications && reopened.complications.slots[0].text[0]==0);
+
+  // Old persisted packets cannot identify private source categories. Clear
+  // all eight old keys on migration, while legacy live decode remains valid.
+  reset_store(&store);
+  length=fixture("complications-v2",bytes);
+  for(size_t at=0,index=0;at<length;at+=256,++index) {
+    const size_t part=length-at<256?length-at:256;
+    memcpy(store.bytes[index],bytes+at,part);store.length[index]=(int)part;
+  }
+  wfc_init(&reopened,&config,true,0);
+  assert(!wfc_load_cache(&reopened,NOW));
+  for(unsigned i=0;i<WFC_CACHE_CHUNKS;++i) assert(store.length[i]==-1);
+  assert(!reopened.has_complications);
+  assert(wfc_receive_complications(&reopened,bytes,length,NOW));
+  assert(reopened.has_complications && store.write_count==0);
+  assert(wfc_connection_changed(&reopened,false));
+  assert(reopened.complications.slots[0].status==COMPLICATION_STATUS_UNAVAILABLE);
+  assert(reopened.complications.slots[0].text[0]==0); // Unknown legacy source cannot survive disconnect.
   return 0;
 }

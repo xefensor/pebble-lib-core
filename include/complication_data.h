@@ -5,17 +5,21 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
+#include <float.h>
+typedef char complications_binary64_required[(sizeof(double) == 8 && DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024) ? 1 : -1];
 
 #define COMPLICATION_SLOT_COUNT 5
 #define COMPLICATION_HEADER_BYTES 6
-#define COMPLICATION_RECORD_HEADER_BYTES 20
-#define COMPLICATION_MAX_TEXT_BYTES 48
-#define COMPLICATION_MAX_BITMAP_WIDTH 24
-#define COMPLICATION_MAX_BITMAP_HEIGHT 24
+#define COMPLICATION_LEGACY_RECORD_HEADER_BYTES 20
+#define COMPLICATION_RECORD_HEADER_BYTES 52
+#define COMPLICATION_MAX_TEXT_BYTES 128
+#define COMPLICATION_MAX_BITMAP_WIDTH 40
+#define COMPLICATION_MAX_BITMAP_HEIGHT 40
 #define COMPLICATION_PALETTE_BYTES 16
-#define COMPLICATION_MAX_BITMAP_BYTES 288
-#define COMPLICATION_MAX_SLOT_BYTES 372
-#define COMPLICATION_MAX_BYTES 1866
+#define COMPLICATION_MAX_BITMAP_BYTES 800
+#define COMPLICATION_MAX_SLOT_BYTES 1036
+#define COMPLICATION_MAX_BYTES 5186
 #define COMPLICATION_MAX_AGE_SECONDS (2 * 60 * 60)
 
 enum {
@@ -40,6 +44,42 @@ enum {
   COMPLICATION_DISPLAY_PRECIPITATION = 1,
 };
 
+#define COMPLICATION_MAX_UNIT_BYTES 16
+#define COMPLICATION_MAX_LABEL_BYTES 24
+
+enum {
+  COMPLICATION_SEMANTIC_GENERIC = 0, COMPLICATION_SEMANTIC_TEMPERATURE = 1,
+  COMPLICATION_SEMANTIC_PRECIPITATION = 2, COMPLICATION_SEMANTIC_BATTERY = 3,
+  COMPLICATION_SEMANTIC_HUMIDITY = 4, COMPLICATION_SEMANTIC_WIND = 5,
+  COMPLICATION_SEMANTIC_UV = 6, COMPLICATION_SEMANTIC_CONDITION = 7,
+  COMPLICATION_SEMANTIC_RANGE = 8, COMPLICATION_SEMANTIC_NUMBER = 9,
+  COMPLICATION_SEMANTIC_BOOLEAN = 10, COMPLICATION_SEMANTIC_TIMESTAMP = 11,
+};
+enum {
+  COMPLICATION_SOURCE_GENERIC = 0, COMPLICATION_SOURCE_WEATHER = 1,
+  COMPLICATION_SOURCE_PHONE = 2, COMPLICATION_SOURCE_MUSIC = 3,
+  COMPLICATION_SOURCE_NOTIFICATION = 4, COMPLICATION_SOURCE_OTHER = 5,
+};
+enum { COMPLICATION_SEMANTIC_VALUE = 1, COMPLICATION_SEMANTIC_MIN = 2,
+       COMPLICATION_SEMANTIC_MAX = 4 };
+
+static inline size_t complications_record_header_bytes(unsigned version) {
+  return version == 3 ? COMPLICATION_RECORD_HEADER_BYTES : COMPLICATION_LEGACY_RECORD_HEADER_BYTES;
+}
+
+// Read IEEE754 binary64 by bits, with no unaligned pointer access.
+static inline double complications_f64(const uint8_t *bytes) {
+  uint64_t bits = 0;
+  for (unsigned i = 0; i < 8; ++i) bits |= (uint64_t)bytes[i] << (i * 8);
+  double value;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+static inline bool complications_zero(const uint8_t *bytes, size_t length) {
+  for (size_t i = 0; i < length; ++i) if (bytes[i]) return false;
+  return true;
+}
+
 typedef struct {
   uint8_t flags;
   uint8_t status;
@@ -48,6 +88,11 @@ typedef struct {
   uint8_t stride;
   uint8_t text_length;
   uint8_t display_kind;
+  uint8_t semantic_kind, source_kind, semantic_flags;
+  bool cached; // Native persistent-cache origin only; never a provider observation time.
+  double numeric_value, minimum, maximum;
+  char unit[COMPLICATION_MAX_UNIT_BYTES + 1];
+  char label[COMPLICATION_MAX_LABEL_BYTES + 1];
   uint16_t pixel_bytes;
   uint32_t confirmed_at;
   uint32_t valid_until;
@@ -131,10 +176,12 @@ static inline bool complications_records_read(const uint8_t *bytes,
                                                size_t length,
                                                ComplicationSet *result) {
   size_t at = COMPLICATION_HEADER_BYTES;
+  const bool extended = bytes[0] == 3;
+  const size_t header = complications_record_header_bytes(bytes[0]);
   const unsigned known_flags = COMPLICATION_FLAG_TEXT | COMPLICATION_FLAG_BITMAP |
       COMPLICATION_FLAG_IMAGE | COMPLICATION_FLAG_TIMESTAMP;
   for (unsigned index = 0; index < COMPLICATION_SLOT_COUNT; ++index) {
-    if (at > length || length - at < COMPLICATION_RECORD_HEADER_BYTES) { return false; }
+    if (at > length || length - at < header) { return false; }
     const uint8_t *record = bytes + at;
     const uint8_t flags = record[0];
     const uint8_t status = record[1];
@@ -146,11 +193,29 @@ static inline bool complications_records_read(const uint8_t *bytes,
     const uint32_t until = complications_u32(record + 10);
     const uint16_t pixel_bytes = complications_u16(record + 14);
     const uint32_t timestamp = complications_u32(record + 16);
+    const uint8_t kind = extended ? record[20] : 0;
+    const uint8_t semantic_flags = extended ? record[21] : 0;
+    const uint8_t unit_length = extended ? record[22] : 0;
+    const uint8_t label_length = extended ? record[23] : 0;
+    const uint8_t source = extended ? record[24] : 0;
+    const double value = extended ? complications_f64(record + 28) : 0;
+    const double minimum = extended ? complications_f64(record + 36) : 0;
+    const double maximum = extended ? complications_f64(record + 44) : 0;
+    if (kind > COMPLICATION_SEMANTIC_TIMESTAMP || source > COMPLICATION_SOURCE_OTHER ||
+        (semantic_flags & ~7) || unit_length > COMPLICATION_MAX_UNIT_BYTES ||
+        label_length > COMPLICATION_MAX_LABEL_BYTES ||
+        (extended && (!complications_zero(record + 25, 3) ||
+          (!(semantic_flags & 1) && !complications_zero(record + 28, 8)) ||
+          (!(semantic_flags & 2) && !complications_zero(record + 36, 8)) ||
+          (!(semantic_flags & 4) && !complications_zero(record + 44, 8)))) ||
+        !isfinite(value) || !isfinite(minimum) || !isfinite(maximum) ||
+        ((semantic_flags & 6) == 6 && minimum > maximum)) return false;
     if ((flags & ~known_flags) || status > COMPLICATION_STATUS_DISABLED ||
         display_kind > COMPLICATION_DISPLAY_PRECIPITATION ||
         (bytes[0] == 1 && display_kind != COMPLICATION_DISPLAY_GENERIC) ||
-        text_length > COMPLICATION_MAX_TEXT_BYTES ||
-        width > COMPLICATION_MAX_BITMAP_WIDTH || height > COMPLICATION_MAX_BITMAP_HEIGHT ||
+        text_length > (extended ? COMPLICATION_MAX_TEXT_BYTES : 48) ||
+        width > (extended ? COMPLICATION_MAX_BITMAP_WIDTH : 24) ||
+        height > (extended ? COMPLICATION_MAX_BITMAP_HEIGHT : 24) ||
         ((flags & COMPLICATION_FLAG_IMAGE) && !(flags & COMPLICATION_FLAG_BITMAP))) { return false; }
     const uint8_t stride = (uint8_t)(((width + 7) >> 3) * 4);
     if (status == COMPLICATION_STATUS_READY) {
@@ -165,20 +230,27 @@ static inline bool complications_records_read(const uint8_t *bytes,
         if (width == 0 || height == 0 || pixel_bytes != (unsigned)stride * height) { return false; }
       } else if (width != 0 || height != 0 || pixel_bytes != 0) { return false; }
     } else if (flags != 0 || display_kind != 0 || text_length != 0 || width != 0 || height != 0 ||
-               confirmed != 0 || until != 0 || pixel_bytes != 0 || timestamp != 0) { return false; }
+               confirmed != 0 || until != 0 || pixel_bytes != 0 || timestamp != 0 ||
+               kind || source || semantic_flags || unit_length || label_length) { return false; }
 
-    at += COMPLICATION_RECORD_HEADER_BYTES;
+    at += header;
     const size_t bitmap_length = flags & COMPLICATION_FLAG_BITMAP
         ? COMPLICATION_PALETTE_BYTES + pixel_bytes : 0;
-    const size_t payload_length = text_length + bitmap_length;
+    const size_t payload_length = text_length + unit_length + label_length + bitmap_length;
     if (payload_length > length - at ||
-        !complications_text_valid(bytes + at, text_length)) { return false; }
+        !complications_text_valid(bytes + at, text_length) ||
+        !complications_text_valid(bytes + at + text_length, unit_length) ||
+        !complications_text_valid(bytes + at + text_length + unit_length, label_length)) { return false; }
     if (result != NULL) {
       ComplicationSlot *slot = &result->slots[index];
       slot->flags = flags;
       slot->status = status;
       slot->text_length = text_length;
       slot->display_kind = display_kind;
+      slot->semantic_kind = kind; slot->source_kind = source; slot->semantic_flags = semantic_flags;
+      slot->numeric_value = value; slot->minimum = minimum; slot->maximum = maximum;
+      if (unit_length) memcpy(slot->unit, bytes + at + text_length, unit_length);
+      if (label_length) memcpy(slot->label, bytes + at + text_length + unit_length, label_length);
       slot->width = width;
       slot->height = height;
       slot->stride = stride;
@@ -188,8 +260,8 @@ static inline bool complications_records_read(const uint8_t *bytes,
       slot->timestamp = timestamp;
       if (text_length) { memcpy(slot->text, bytes + at, text_length); }
       if (bitmap_length) {
-        memcpy(slot->palette, bytes + at + text_length, COMPLICATION_PALETTE_BYTES);
-        memcpy(slot->bitmap, bytes + at + text_length + COMPLICATION_PALETTE_BYTES, pixel_bytes);
+        memcpy(slot->palette, bytes + at + text_length + unit_length + label_length, COMPLICATION_PALETTE_BYTES);
+        memcpy(slot->bitmap, bytes + at + text_length + unit_length + label_length + COMPLICATION_PALETTE_BYTES, pixel_bytes);
       }
     }
     at += payload_length;
@@ -203,8 +275,8 @@ static inline bool complications_records_read(const uint8_t *bytes,
 static inline bool complications_read(const uint8_t *bytes, size_t length,
                                        ComplicationSet *result) {
   if (bytes == NULL || length < COMPLICATION_HEADER_BYTES +
-      COMPLICATION_SLOT_COUNT * COMPLICATION_RECORD_HEADER_BYTES ||
-      length > COMPLICATION_MAX_BYTES || (bytes[0] != 1 && bytes[0] != 2) || bytes[1] != 0 ||
+      COMPLICATION_SLOT_COUNT * COMPLICATION_LEGACY_RECORD_HEADER_BYTES ||
+      length > COMPLICATION_MAX_BYTES || (bytes[0] != 1 && bytes[0] != 2 && bytes[0] != 3) || bytes[1] != 0 ||
       complications_u16(bytes + 2) != length ||
       complications_u16(bytes + 4) != complications_crc16(bytes, length) ||
       !complications_records_read(bytes, length, NULL)) { return false; }

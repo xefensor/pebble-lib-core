@@ -1,4 +1,4 @@
-# Host contract — 0.1.0
+# Host contract — 0.2.0
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
@@ -12,7 +12,7 @@ persistence namespace, settings, drawing and event ownership.
 | `createMessageQueue(options)` | Returns a serialized `send(payload, success, failure)` function shared by theme, complication and context messages |
 | `createComplications(options)` | Subscribes to the first two global choices; supplies `refresh()`, `configure()` and `status()` |
 | `createContext(options)` | Coordinates music, optional notifications and phone battery; supplies refresh/configuration/connection/status/stop methods |
-| `wire` | Bounded text/image normalization and version-2 packet encoding helpers |
+| `wire` | Bounded text/image normalization and version-3 packet encoding helpers |
 
 Both source coordinators receive `pebble`, generated `keys`, the shared `send`,
 `now`, `later`, `cancelLater` and `getSettings`. `now()` returns milliseconds,
@@ -67,7 +67,7 @@ or perform those updates after routing an event.
 | --- | --- |
 | Selected complications | First two global choices; at most two hours from confirmed receipt, capped by an earlier source expiry |
 | Music / phone battery | Confirmation lease at most 120 seconds; one-minute phone refresh |
-| New notification | At most 12 seconds, retaining original expiry |
+| New notification | At most eight seconds, retaining original expiry |
 | Paused music | Five-second grace period |
 | Context cache | Never persisted; cleared on disconnect or native relaunch |
 | Notification baseline | Existing notifications are not replayed on startup, reconnect or access reconfiguration |
@@ -78,10 +78,43 @@ context takes priority over music. An unmarked frame may recover music/status,
 but private notifications stay blocked until a fresh marked baseline matches
 the current native session.
 
-The v2 bounded packet and CRC contract are exercised by the shared fixtures in
+The v3 bounded packet and CRC contract (with strict v1/v2 decoding) are exercised by the shared fixtures in
 `tests/fixtures/`. Changing the wire format requires a deliberate versioned
 migration on both C and JavaScript sides. Do not infer weather semantics from
 arbitrary percentages or rewrite a provider's formatted units.
+
+## Versioned wire and host budgets
+
+Version 3 uses the existing six-byte packet header and a 52-byte record header.
+A record retains up to 128 UTF-8 text bytes, a 16-byte unit and 24-byte label,
+optional little-endian IEEE754 binary64 value/min/max, semantic/source enums,
+and a 40×40 4bpp bitmap with at most 16 palette entries. Five records fit within
+5,186 bytes. Native AppMessage inboxes need at least 6,144 bytes, including
+dictionary overhead. Unknown flags/enums, nonfinite metadata, invalid ranges,
+UTF-8, palette references, CRC or lengths are rejected. See the public header
+and cross-language fixtures for exact byte offsets.
+
+The original eight-key, 256-byte-per-key native cache namespace remains. Stored
+snapshots drop bitmap payloads to stay bounded, while retaining scalar data and
+original confirmation/expiry. Live state keeps its images. Image-only values
+become unavailable in a restored cache. The native cached flag identifies only
+local persistence; receipt time never claims to be provider measurement time.
+Music and notification categories are excluded from both phone and native reading
+caches, even when selected as ordinary complication slots. Native caches from
+versions 1/2 lack source identity and are cleared during migration; live legacy
+packet decoding remains supported.
+
+The queue factory accepts the host's generated `keys` alongside transport and
+timer callbacks. It recognizes pure complication and context snapshots from
+those keys and exposes `send.supersedesSnapshots`. Only pending snapshots in
+the same channel may be replaced. Mixed settings/data payloads retain FIFO. An active send is never
+reported acknowledged before transport ACK. Replaced entries fail with
+SUPERSEDED, which coordinators treat as terminal rather than retrying obsolete
+data. Hosts must continue to route reconnect tokens with their own snapshot.
+
+Per-source status is available for settings; health snapshots are not a live
+configuration-page channel. Keep private music and message contents out of
+status diagnostics, logs and persistent storage.
 
 ## Presentation boundary
 

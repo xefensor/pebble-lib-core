@@ -1,6 +1,9 @@
 'use strict';
 
-var VERSION = 2;
+var VERSION = 3;
+var HEADER_BYTES = 52;
+var SEMANTIC_KIND = {GENERIC:0,TEMPERATURE:1,PRECIPITATION:2,BATTERY:3,HUMIDITY:4,WIND:5,UV:6,CONDITION:7,RANGE:8,NUMBER:9,BOOLEAN:10,TIMESTAMP:11};
+var SOURCE_KIND = {GENERIC:0,WEATHER:1,PHONE:2,MUSIC:3,NOTIFICATION:4,OTHER:5};
 var SLOT_COUNT = 5;
 var TEXT = 1;
 var BITMAP = 2;
@@ -12,7 +15,7 @@ var UNAVAILABLE = 3;
 var UNSUPPORTED = 5;
 var MAX_EPOCH = 4294967295;
 var MAX_AGE = 7200;
-var MAX_TEXT_BYTES = 48;
+var MAX_TEXT_BYTES = 128;
 
 function object(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 function integer(value, minimum, maximum) {
@@ -49,7 +52,8 @@ function utf8Length(value) { return value < 0x80 ? 1 : value < 0x800 ? 2 : value
 // when sanitizing them, repair orphan surrogates and truncate only whole UTF-8
 // scalars, reserving an ellipsis when content exceeds the byte limit. The
 // bounded returned string is also suitable for coordinator storage and replay.
-function normalizeText(value) {
+function normalizeText(value, maxBytes) {
+  maxBytes = integer(maxBytes, 3, MAX_TEXT_BYTES) ? maxBytes : MAX_TEXT_BYTES;
   if (typeof value !== 'string') { return ''; }
   var result = '';
   var ellipsisPrefix = '';
@@ -64,11 +68,11 @@ function normalizeText(value) {
     // alone do not make an otherwise fitting string require an ellipsis.
     if (code === 0x20) { pendingSpace = result.length > 0; continue; }
     var length = utf8Length(code) + (pendingSpace ? 1 : 0);
-    if (count + length > MAX_TEXT_BYTES) { return ellipsisPrefix + '\u2026'; }
+    if (count + length > maxBytes) { return ellipsisPrefix + '\u2026'; }
     result += (pendingSpace ? ' ' : '') + scalarText(code);
     count += length;
     pendingSpace = false;
-    if (count <= MAX_TEXT_BYTES - 3) { ellipsisPrefix = result; }
+    if (count <= maxBytes - 3) { ellipsisPrefix = result; }
   }
   return result;
 }
@@ -97,14 +101,16 @@ function crc16Xmodem(value) {
   }
   return crc;
 }
-function statusRecord(status) {
+function statusRecord(status, headerBytes) {
+  headerBytes = headerBytes || HEADER_BYTES;
   var result = [];
-  for (var i = 0; i < 20; i++) { result.push(0); }
+  for (var i = 0; i < headerBytes; i++) { result.push(0); }
   result[1] = status;
   return result;
 }
-function bitmapOf(value) {
-  if (!object(value) || !integer(value.width, 1, 24) || !integer(value.height, 1, 24) ||
+function bitmapOf(value, maxSize) {
+  maxSize = maxSize || 40;
+  if (!object(value) || !integer(value.width, 1, maxSize) || !integer(value.height, 1, maxSize) ||
       !bytes(value.palette) || !integer(value.palette.length, 1, 16)) { return null; }
   var stride = ((value.width + 7) >> 3) * 4;
   var count = stride * value.height;
@@ -123,46 +129,90 @@ function bitmapOf(value) {
   return {width:value.width, height:value.height, palette:palette,
     pixels:Array.prototype.slice.call(value.pixels), image:value.image === true};
 }
-function record(slot, nowSec) {
-  if (slot === undefined || slot === null) { return statusRecord(EMPTY); }
-  if (!object(slot) || !integer(slot.status, 0, 6)) { return statusRecord(UNSUPPORTED); }
-  if (slot.status !== READY) { return statusRecord(slot.status); }
+function f64(out, at, value) {
+  var buffer = new ArrayBuffer(8), view = new DataView(buffer);
+  view.setFloat64(0, value, true);
+  for (var i = 0; i < 8; ++i) { out[at + i] = view.getUint8(i); }
+}
+function semanticOf(slot) {
+  var value = slot.semantic;
+  if (!object(value)) { return null; }
+  var kind = value.kind === undefined ? 0 : value.kind;
+  var source = value.source === undefined ? 0 : value.source;
+  if (!integer(kind, 0, 11) || !integer(source, 0, 5)) { return null; }
+  var result = {kind:kind,source:source,flags:0,unit:[],label:[]};
+  var fields = ['value','min','max'];
+  for (var i = 0; i < fields.length; ++i) {
+    if (value[fields[i]] !== undefined) {
+      var numeric = value[fields[i]];
+      if (typeof numeric !== 'number' || !isFinite(numeric)) { return null; }
+      result[fields[i]] = numeric; result.flags |= 1 << i;
+    }
+  }
+  if ((result.flags & 6) === 6 && result.min > result.max) { return null; }
+  if (value.unit !== undefined) {
+    if (typeof value.unit !== 'string') { return null; }
+    result.unit = utf8(normalizeText(value.unit));
+    // A shortened unit could change its meaning. Omit invalid optional metadata.
+    if (result.unit.length > 16) { return null; }
+  }
+  if (value.label !== undefined) {
+    if (typeof value.label !== 'string') { return null; }
+    result.label = utf8(normalizeText(value.label,24));
+  }
+  return result;
+}
+
+function record(slot, nowSec, version) {
+  var header = version === 3 ? HEADER_BYTES : 20;
+  if (slot === undefined || slot === null) { return statusRecord(EMPTY,header); }
+  if (!object(slot) || !integer(slot.status, 0, 6)) { return statusRecord(UNSUPPORTED,header); }
+  if (slot.status !== READY) { return statusRecord(slot.status,header); }
   if (!integer(nowSec, 1, MAX_EPOCH) || !integer(slot.confirmedAt, 1, MAX_EPOCH) ||
-      !integer(slot.validUntil, 1, MAX_EPOCH) || slot.confirmedAt > nowSec) { return statusRecord(UNAVAILABLE); }
+      !integer(slot.validUntil, 1, MAX_EPOCH) || slot.confirmedAt > nowSec) { return statusRecord(UNAVAILABLE,header); }
   var until = Math.min(slot.validUntil, slot.confirmedAt + MAX_AGE, MAX_EPOCH);
-  if (nowSec >= until) { return statusRecord(UNAVAILABLE); }
-  var text = utf8(normalizeText(slot.text));
+  if (nowSec >= until) { return statusRecord(UNAVAILABLE,header); }
+  var text = utf8(normalizeText(slot.text,version === 3 ? 128 : 48));
   var event = !text.length && integer(slot.timestamp, 1, MAX_EPOCH) ? slot.timestamp : null;
-  var bitmap = bitmapOf(slot.bitmap);
+  var bitmap = bitmapOf(slot.bitmap,version === 3 ? 40 : 24);
   var flags = (text.length ? TEXT : event !== null ? TIMESTAMP : 0) |
     (bitmap ? BITMAP | (bitmap.image ? IMAGE : 0) : 0);
-  if (!flags) { return statusRecord(slot.timestamp === 0 ? UNAVAILABLE : UNSUPPORTED); }
-  var out = statusRecord(READY);
+  if (!flags) { return statusRecord(slot.timestamp === 0 ? UNAVAILABLE : UNSUPPORTED,header); }
+  var out = statusRecord(READY,header);
   out[0] = flags;
   out[2] = text.length;
   out[3] = bitmap ? bitmap.width : 0;
   out[4] = bitmap ? bitmap.height : 0;
   // V2 uses the former reserved byte for a provider-aware presentation hint.
   // Generic percentages (battery, humidity) never acquire precipitation art.
-  out[5] = slot.displayKind === 1 && text.length ? 1 : 0;
+  out[5] = version !== 1 && slot.displayKind === 1 && text.length ? 1 : 0;
   u32(out, 6, slot.confirmedAt);
   u32(out, 10, until);
   u16(out, 14, bitmap ? bitmap.pixels.length : 0);
   if (event !== null) { u32(out, 16, event); }
-  out = out.concat(text);
+  var semantic = version === 3 ? semanticOf(slot) : null;
+  if (semantic) {
+    out[20] = semantic.kind; out[21] = semantic.flags;
+    out[22] = semantic.unit.length; out[23] = semantic.label.length; out[24] = semantic.source;
+    if (semantic.flags & 1) { f64(out,28,semantic.value); }
+    if (semantic.flags & 2) { f64(out,36,semantic.min); }
+    if (semantic.flags & 4) { f64(out,44,semantic.max); }
+  }
+  out = out.concat(text,semantic ? semantic.unit : [],semantic ? semantic.label : []);
   if (bitmap) { out = out.concat(bitmap.palette, bitmap.pixels); }
   return out;
 }
 
 /** Five fixed slots, including holes. No fetching, cache mutation or inference. */
-function packComplications(slots, nowSec) {
-  var out = [VERSION, 0, 0, 0, 0, 0];
+function packComplications(slots, nowSec, version) {
+  version = version === 1 || version === 2 ? version : VERSION;
+  var out = [version, 0, 0, 0, 0, 0];
   var values = Array.isArray(slots) ? slots : [];
-  for (var i = 0; i < SLOT_COUNT; i++) { out = out.concat(record(values[i], nowSec)); }
+  for (var i = 0; i < SLOT_COUNT; i++) { out = out.concat(record(values[i], nowSec,version)); }
   u16(out, 2, out.length);
   // CRC bytes stay zero while calculating the checksum over the whole packet.
   u16(out, 4, crc16Xmodem(out));
   return out;
 }
 
-module.exports = {packComplications:packComplications, normalizeText:normalizeText, crc16Xmodem:crc16Xmodem};
+module.exports = {packComplications:packComplications, normalizeText:normalizeText, crc16Xmodem:crc16Xmodem, SEMANTIC_KIND:SEMANTIC_KIND, SOURCE_KIND:SOURCE_KIND};

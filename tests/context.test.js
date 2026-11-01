@@ -2,6 +2,7 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const createContext=require('../src/js/context');
+const createQueue=require('../src/js/message-queue');
 const NOW=1791893700000;
 const KEY=10023;
 const REQUEST_KEY=10024;
@@ -14,13 +15,17 @@ const battery=value=>({instances:[{instanceId:'phone',properties:{battery_level:
 const envelope=instances=>({instances});
 function decode(bytes) {
   const buffer=Buffer.from(bytes); let at=6;
+  const header=buffer[0]>=3 ? 52 : 20;
   return Array.from({length:5},()=>{
     const value={flags:buffer[at],status:buffer[at+1],width:buffer[at+3],height:buffer[at+4],
       confirmedAt:buffer.readUInt32LE(at+6),validUntil:buffer.readUInt32LE(at+10)};
     const length=buffer[at+2], pixelBytes=buffer.readUInt16LE(at+14);
-    value.text=buffer.subarray(at+20,at+20+length).toString('utf8');
-    if (value.flags&2) value.pixels=[...buffer.subarray(at+20+length+16,at+20+length+16+pixelBytes)];
-    at+=20+length+(value.flags&2?16+pixelBytes:0);
+    const unitLength=header===52 ? buffer[at+22] : 0,labelLength=header===52 ? buffer[at+23] : 0;
+    value.text=buffer.subarray(at+header,at+header+length).toString('utf8');
+    if(header===52) value.semantic={kind:buffer[at+20],source:buffer[at+24],value:buffer[at+21]&1 ? buffer.readDoubleLE(at+28) : undefined,
+      min:buffer[at+21]&2 ? buffer.readDoubleLE(at+36) : undefined,max:buffer[at+21]&4 ? buffer.readDoubleLE(at+44) : undefined};
+    if (value.flags&2) value.pixels=[...buffer.subarray(at+header+length+unitLength+labelLength+16,at+header+length+unitLength+labelLength+16+pixelBytes)];
+    at+=header+length+unitLength+labelLength+(value.flags&2?16+pixelBytes:0);
     return value;
   });
 }
@@ -43,6 +48,7 @@ function fixture(overrides={}) {
     log(){throw new Error('No private-content logging');},
     send:(payload,success,failure)=>{deliveries.push(payload);callbacks.push({success,failure});if(!hold)success();}
   };
+  if(overrides.queue) options.send=createQueue({send:options.send,keys:options.keys,later:options.later,cancelLater:options.cancelLater});
   const client=createContext(options);
   function latest(name) {
     const category=name==='phone'?'phone':name;
@@ -63,7 +69,7 @@ test('Default context subscribes only music and phone state, without provider pi
   const f=fixture();f.client.refresh();
   assert.deepEqual(f.subscriptions.map(s=>[s.request.category,s.request.item]),[['music','track'],['phone','phone_state']]);
   for(const sub of f.subscriptions) assert.equal(sub.request.plugin,undefined);
-  assert.deepEqual(f.latest('music').iconPixelSize,{w:24,h:24});
+  assert.deepEqual(f.latest('music').iconPixelSize,{w:40,h:40});
   assert.equal(f.latest('phone').iconPixelSize,undefined);
   assert.equal(f.client.status().ready,false);
   f.source('music',envelope([]));f.source('phone',battery(75));
@@ -140,7 +146,7 @@ test('Notification baseline suppresses existing shade entries and only newly arr
   f.source('notifications',envelope([notification('new'),existing]));
   assert.equal(f.packet()[2].text,'Signal · Alexej');
   assert.equal(f.packet()[3].status,0,'message bodies are hidden by default');
-  assert.equal(f.packet()[2].validUntil,NOW/1000+12);
+  assert.equal(f.packet()[2].validUntil,NOW/1000+8);
   assert.equal(f.client.status().notification,true);
 });
 
@@ -173,12 +179,12 @@ test('A new message on the same conversation notification key activates a fresh 
   f.source('notifications',envelope([notification('chat','Alexej','Signal','Earlier message')]));
   f.source('notifications',envelope([notification('chat','Alexej','Signal','A new message')]));
   assert.equal(f.packet()[3].text,'A new message');
-  assert.equal(f.packet()[2].validUntil,NOW/1000+12);
+  assert.equal(f.packet()[2].validUntil,NOW/1000+8);
   f.tick(5000);
   f.source('notifications',envelope([notification('chat','Alexej','Signal','Another new message')]));
   assert.equal(f.packet()[3].text,'Another new message');
   const end=f.packet()[2].validUntil;
-  assert.equal(end,NOW/1000+17);
+  assert.equal(end,NOW/1000+8,'updates in one burst keep the original interruption deadline');
   f.tick(1000);
   f.source('notifications',envelope([notification('chat','Alexej','Signal','Another new message',{app_icon:{image:{invalid:true}}})]));
   assert.equal(f.packet()[2].validUntil,end);
@@ -415,7 +421,7 @@ test('Every marked boundary is notification-free, including a retry queued after
   assert.equal(f.deliveries.at(-1)[REQUEST_KEY],undefined);
   assert.equal(f.packet()[3].text,'Fresh private body','fresh content follows its acknowledged boundary');
   assert.equal(f.packet()[2].confirmedAt,NOW/1000);
-  assert.equal(f.packet()[2].validUntil,NOW/1000+12,'the boundary does not renew the notice lifetime');
+  assert.equal(f.packet()[2].validUntil,NOW/1000+8,'the boundary does not renew the notice lifetime');
 });
 
 test('Startup waits for the native token instead of echoing a default boundary or forwarding early notifications',()=>{
@@ -454,4 +460,60 @@ test('Only positive 31-bit native tokens above the ordinary request value are ec
   }
   f.client.refresh(true,2);assert.equal(f.deliveries.at(-1)[REQUEST_KEY],2);
   f.client.refresh(true,2147483647);assert.equal(f.deliveries.at(-1)[REQUEST_KEY],2147483647);
+});
+
+test('Music titles and artists retain128UTF8bytes and request40px artwork while notification icons remain24px',()=>{
+  const f=fixture({settings:{showNotifications:true}});f.client.refresh();
+  const shape={width:40,height:40,palette:Buffer.from([0,255]).toString('base64'),pixels:Buffer.alloc(800,0x10).toString('base64')};
+  f.source('music',music(true,'ě'.repeat(50),'Artist '.repeat(30),{artwork:{image:shape}}));
+  assert.equal(f.packet()[0].text,'ě'.repeat(50));assert.equal(f.packet()[0].width,40);assert.equal(f.packet()[0].height,40);
+  assert.equal(f.packet()[0].pixels.length,800);assert.equal(f.packet()[0].semantic.source,3);
+  assert.equal(Buffer.byteLength(f.packet()[1].text,'utf8'),128);assert.ok(f.packet()[1].text.endsWith('…'));
+  assert.deepEqual(f.latest('notifications').iconPixelSize,{w:24,h:24});
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('one','Alexej','Signal','Text',{app_icon:{image:shape}})]));
+  assert.equal(f.packet()[2].flags,1,'oversized notification icons are omitted');assert.equal(f.packet()[2].semantic.source,4);
+  f.source('phone',battery(0));assert.deepEqual(f.packet()[4].semantic,{kind:3,source:2,value:0,min:0,max:100});
+});
+
+test('A continuous notification burst updates the visible text but cannot extend its8second interruption, then resets after quiet',()=>{
+  const f=fixture({settings:{showNotifications:true,notificationPreview:true}});f.client.refresh();f.source('music',music());
+  f.source('notifications',envelope([]));f.source('notifications',envelope([notification('chat','Alexej','Signal','Message0')]));
+  const end=f.packet()[2].validUntil;
+  for(let i=1;i<=20;i++) {
+    f.tick(1000);f.source('notifications',envelope([notification('chat','Alexej','Signal','Message'+i)]));
+    if(i<8) {assert.equal(f.packet()[3].text,'Message'+i);assert.equal(f.packet()[2].validUntil,end);}
+    else {assert.equal(f.packet()[2].status,0);assert.equal(f.packet()[3].status,0);}
+    assert.equal(f.packet()[0].text,'Genesis','music remains available underneath the interruption');
+  }
+  f.tick(3000);f.source('notifications',envelope([notification('chat','Alexej','Signal','Independent later message')]));
+  assert.equal(f.packet()[3].text,'Independent later message');assert.equal(f.packet()[2].validUntil,NOW/1000+31);
+});
+
+test('Context source health reports receipt ages and state without pretending receipt is an observation timestamp',()=>{
+  const f=fixture({settings:{showNotifications:true}});f.client.refresh();
+  assert.equal(f.client.status().sourceStates.music.state,'waiting');
+  f.source('music',music());f.source('phone',battery(80));f.source('notifications',envelope([]));
+  let state=f.client.status().sourceStates;
+  assert.equal(state.music.state,'playing');assert.equal(state.notifications.state,'idle');assert.equal(state.phone.state,'ready');
+  assert.equal(state.music.receivedAt,NOW/1000);assert.equal(state.music.observedAt,null);
+  f.advance(2000);f.source('music',music(false));assert.equal(f.client.status().sourceStates.music.state,'paused');
+  f.error('notifications','PERMISSION_DENIED');state=f.client.status().sourceStates;
+  assert.equal(state.notifications.state,'denied');assert.equal(state.notifications.message,'PERMISSION_DENIED');
+  assert.equal(state.phone.receivedAgeSec,2);assert.equal(state.phone.observationAgeSec,null);
+  assert.ok(!JSON.stringify(state).includes('Genesis'));
+});
+
+test('Shared transport coalesces waiting context snapshots to the latest data and preserves the matching baseline token',()=>{
+  const f=fixture({queue:true,settings:{showNotifications:true}});f.hold(true);f.client.refresh(true,7);
+  f.source('music',music(true,'Old'));f.source('music',music(true,'Latest'));
+  f.client.connectionChanged(true,8);f.source('music',music(true,'After reconnect'));
+  assert.equal(f.deliveries.length,1);
+  f.callbacks[0].success();assert.equal(f.deliveries.length,2);
+  assert.equal(f.deliveries.at(-1)[REQUEST_KEY],8);assert.equal(f.packet()[0].text,'After reconnect');assert.equal(f.packet()[2].status,0);
+  f.callbacks[1].success();f.tick(5000);assert.equal(f.deliveries.length,2);assert.equal(f.client.status().error,'');
+});
+
+test('A superseded standalone context transfer is terminal and never changes provider health',()=>{
+  const f=fixture();f.hold(true);f.client.refresh();f.callbacks.at(-1).failure({code:'SUPERSEDED'});
+  const count=f.deliveries.length;f.tick(5000);assert.equal(f.deliveries.length,count);assert.equal(f.client.status().error,'');
 });

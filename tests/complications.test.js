@@ -2,6 +2,7 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const createComplications=require('../src/js/complications');
+const createQueue=require('../src/js/message-queue');
 const NOW=1791893700000;
 const KEY=10021;
 const preference=(slot,category='test',item='reading',index=0,property='value')=>({instanceId:String(slot),properties:{
@@ -10,14 +11,22 @@ const preference=(slot,category='test',item='reading',index=0,property='value')=
 const envelope=(property,extra={})=>({pluginUuid:'native-resolved-provider',instances:[{instanceId:'irrelevant-name',properties:{value:property}}],...extra});
 function decode(bytes) {
   const buffer=Buffer.from(bytes);
+  const header=buffer[0]>=3 ? 52 : 20;
   let at=6;
   return Array.from({length:5},()=>{
     const result={flags:buffer[at],status:buffer[at+1],displayKind:buffer[at+5],confirmedAt:buffer.readUInt32LE(at+6),
       validUntil:buffer.readUInt32LE(at+10),timestamp:buffer.readUInt32LE(at+16)};
     const length=buffer[at+2];
     const pixelBytes=buffer.readUInt16LE(at+14);
-    result.text=buffer.subarray(at+20,at+20+length).toString('utf8');
-    at+=20+length+(result.flags&2?16+pixelBytes:0);
+    const unitLength=header===52 ? buffer[at+22] : 0, labelLength=header===52 ? buffer[at+23] : 0;
+    result.text=buffer.subarray(at+header,at+header+length).toString('utf8');
+    if(header===52) result.semantic={kind:buffer[at+20],source:buffer[at+24],
+      value:buffer[at+21]&1 ? buffer.readDoubleLE(at+28) : undefined,
+      min:buffer[at+21]&2 ? buffer.readDoubleLE(at+36) : undefined,
+      max:buffer[at+21]&4 ? buffer.readDoubleLE(at+44) : undefined,
+      unit:buffer.subarray(at+header+length,at+header+length+unitLength).toString('utf8'),
+      label:buffer.subarray(at+header+length+unitLength,at+header+length+unitLength+labelLength).toString('utf8')};
+    at+=header+length+unitLength+labelLength+(result.flags&2?16+pixelBytes:0);
     return result;
   });
 }
@@ -43,6 +52,7 @@ function fixture(overrides={}) {
     getSettings:()=>settings,localizeBoolean:(value,language)=>language==='cs'?(value?'Zapnuto':'Vypnuto'):(value?'On':'Off'),log:message=>logs.push(message),
     send:(payload,success,failure)=>{deliveries.push(payload);callbacks.push({success,failure});if(!hold)success();}
   };
+  if(overrides.queue) options.send=createQueue({send:options.send,keys:options.keys,later:options.later,cancelLater:options.cancelLater});
   if(overrides.cacheKey!==undefined) options.cacheKey=overrides.cacheKey;
   if(overrides.unavailable) delete pebble.subscribeToSource;
   function latest(category,item) {
@@ -327,7 +337,8 @@ test('Compact source bitmap rows are repacked into the watch stride with zeroed 
   assert.equal(packet[first+1],2);
   assert.equal(packet[first+3],3);assert.equal(packet[first+4],2);
   assert.equal(packet.readUInt16LE(first+14),8);
-  assert.deepEqual([...packet.subarray(first+20+16,first+20+16+8)],[0x01,0x10,0,0,0x10,0,0,0]);
+  const pixels=first+52+packet[first+2]+packet[first+22]+packet[first+23]+16;
+  assert.deepEqual([...packet.subarray(pixels,pixels+8)],[0x01,0x10,0,0,0x10,0,0,0]);
   // A four-byte-aligned source payload is not the public ImageShape format.
   f.source(envelope({icon:{...image,pixels:Buffer.from([0x01,0x10,0,0,0x10,0,0,0]).toString('base64')}}));
   assert.equal(f.packet()[0].status,3);
@@ -489,4 +500,126 @@ test('An empty or non-string host cache key falls back to the generic library na
     assert.ok(f.values.has('watchface-core-complications-v1'));
     assert.ok(!f.values.has('halftone-complications-v1'));
   }
+});
+
+test('Semantic metadata retains exact source identity, numeric values and ranges without rewriting formatted units',()=>{
+  const f=fixture();f.client.refresh();
+  const temp=preference(0,'weather','location',0,'temperature');
+  temp.properties.label={shortText:{text:'Air temperature'}};
+  f.prefs([temp,preference(1,'phone','phone_state',0,'battery_level')]);
+  f.source({instances:[{properties:{temperature:{shortText:{text:'5,3°F'},numericValue:{value:5.25,unit:'°F',min:-40,max:120}}}}]},'weather','location');
+  f.source({instances:[{properties:{battery_level:{shortText:{text:'0%'},numericValue:{value:0,unit:'%',min:0,max:100}}}}]},'phone','phone_state');
+  const [temperature,battery]=f.packet();
+  assert.equal(temperature.text,'5,3°F');
+  assert.deepEqual(temperature.semantic,{kind:1,source:1,value:5.25,min:-40,max:120,unit:'°F',label:'Air temperature'});
+  assert.equal(battery.text,'0%');assert.equal(battery.semantic.kind,3);assert.equal(battery.semantic.source,2);
+  assert.equal(battery.semantic.value,0);assert.equal(battery.semantic.min,0);assert.equal(battery.semantic.max,100);
+  assert.equal(f.client.status().slots[0].label,'Air temperature');
+  const saved=JSON.parse(f.values.get('watchface-core-complications-v1')).records[0];
+  assert.equal(saved.semantic.unit,'°F');assert.equal(saved.semantic.value,5.25);
+  f.advance(60000);f.client.configure();
+  assert.equal(f.packet()[0].confirmedAt,temperature.confirmedAt);assert.deepEqual(f.packet()[0].semantic,temperature.semantic);
+  assert.equal(JSON.parse(f.values.get('watchface-core-complications-v1')).records[0].confirmedAt,saved.confirmedAt);
+});
+
+test('Unrelated numeric properties remain generic numbers, malformed ranges are omitted, and long units are never shortened into a different unit',()=>{
+  const f=fixture();f.client.refresh();f.prefs([preference(0)]);
+  f.source(envelope({shortText:{text:'12,5 milligrams per cubic metre'},numericValue:{value:12.5,unit:'milligrams per cubic metre',min:10,max:1}}));
+  const slot=f.packet()[0];
+  assert.equal(slot.text,'12,5 milligrams per cubic metre');assert.equal(slot.semantic.kind,9);assert.equal(slot.semantic.source,5);
+  assert.equal(slot.semantic.value,12.5);assert.equal(slot.semantic.unit,'');
+  assert.equal(slot.semantic.min,undefined);assert.equal(slot.semantic.max,undefined);
+  assert.equal(f.client.status().slots[0].text,null,'unknown plugins do not leak their content through diagnostics');
+  f.source(envelope({boolean:{value:false}}));assert.equal(f.packet()[0].semantic.kind,10);assert.equal(f.packet()[0].semantic.value,0);
+  f.source(envelope({timestamp:{value:NOW/1000+600}}));
+  assert.equal(f.packet()[0].semantic.kind,11);assert.equal(f.packet()[0].flags,8);assert.equal(f.packet()[0].timestamp,NOW/1000+600);
+});
+
+test('Weather freshness diagnostics distinguish original measurement time from receipt, replay and provider expiry',()=>{
+  const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,'temperature')]);
+  assert.deepEqual(f.latest('weather','location').properties,['temperature','observed_at','is_forecast']);
+  f.source({validUntilMs:NOW+1200000,instances:[{properties:{temperature:{shortText:{text:'7°C'}},
+    observed_at:{timestamp:{value:NOW/1000-600}},is_forecast:{boolean:{value:false}}}}]},'weather','location');
+  let state=f.client.status().slots[0];
+  assert.equal(state.receivedAt,NOW/1000);assert.equal(state.receivedAgeSec,0);
+  assert.equal(state.observedAt,NOW/1000-600);assert.equal(state.observationAgeSec,600);assert.equal(state.cached,false);
+  f.advance(60000);f.client.configure();state=f.client.status().slots[0];
+  assert.equal(state.receivedAgeSec,60);assert.equal(state.observationAgeSec,660);assert.equal(state.text,'7°C');
+  const restored=fixture({values:f.values});restored.advance(60000);restored.client.refresh();restored.prefs([preference(0,'weather','location',0,'temperature')]);
+  state=restored.client.status().slots[0];assert.equal(state.cached,true);assert.equal(state.receivedAt,NOW/1000);assert.equal(state.observationAgeSec,660);
+  restored.source({instances:[{properties:{temperature:{shortText:{text:'~6°C'}},is_forecast:{boolean:{value:true}},
+    observed_at:{timestamp:{value:NOW/1000-600}}}}]},'weather','location');
+  state=restored.client.status().slots[0];assert.equal(state.observedAt,null);assert.equal(state.observationAgeSec,null);assert.equal(state.cached,false);
+});
+
+test('Humidity and wind observation diagnostics use their own measurement timestamps; future or unrelated times are not observations',()=>{
+  const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,'humidity'),preference(1,'weather','location',0,'wind_speed')]);
+  f.source({instances:[{properties:{humidity:{numericValue:{value:70,unit:'%'}},wind_speed:{numericValue:{value:3,unit:'m/s'}},
+    observed_at:{timestamp:{value:NOW/1000-60}},humidity_observed_at:{timestamp:{value:NOW/1000-300}},wind_observed_at:{timestamp:{value:NOW/1000+1}}}}]},'weather','location');
+  const states=f.client.status().slots;
+  assert.equal(states[0].observationAgeSec,300);assert.equal(states[1].observedAt,null);
+  assert.equal(f.packet()[0].semantic.kind,4);assert.equal(f.packet()[1].semantic.kind,5);
+});
+
+test('Shared transport replaces a waiting complication snapshot with the latest value without changing receipt times or reporting provider errors',()=>{
+  const f=fixture({queue:true});f.hold(true);f.client.refresh();f.prefs([preference(0)]);
+  f.source(envelope({shortText:{text:'Old value'}}));f.advance(1000);f.source(envelope({shortText:{text:'Latest value'}}));
+  assert.equal(f.deliveries.length,1,'only the raw active loading snapshot has been sent');
+  f.callbacks[0].success();assert.equal(f.deliveries.length,2);assert.equal(f.packet()[0].text,'Latest value');
+  assert.equal(f.packet()[0].confirmedAt,NOW/1000+1);
+  f.callbacks[1].success();f.tick(5000);assert.equal(f.deliveries.length,2);assert.equal(f.client.status().error,'');
+  assert.deepEqual(f.logs,[]);
+});
+
+test('A superseded standalone complication transfer does not retry or become a provider diagnostic',()=>{
+  const f=fixture();f.hold(true);f.client.refresh();f.prefs([preference(0)]);
+  f.callbacks.at(-1).failure({code:'SUPERSEDED'});const count=f.deliveries.length;
+  f.tick(5000);assert.equal(f.deliveries.length,count);assert.equal(f.client.status().error,'');assert.deepEqual(f.logs,[]);
+});
+
+test('Explicit music and notification complication selections render live but never persist or restore their private readings',()=>{
+  for(const category of ['music','notifications']) {
+    const f=fixture();f.client.refresh();
+    const selected=[preference(0,category,category==='music'?'track':'notification',0,'value'),preference(1,'weather','location',0,'temperature')];
+    f.prefs(selected);
+    f.source(envelope({shortText:{text:'Private '+category+' content'}}),category,category==='music'?'track':'notification');
+    f.source({instances:[{properties:{temperature:{shortText:{text:'7°C'}}}}]},'weather','location');
+    assert.equal(f.packet()[0].text,'Private '+category+' content','explicit selection still renders current RAM data');
+    const saved=JSON.parse(f.values.get('watchface-core-complications-v1'));
+    assert.equal(saved.records[0],null);assert.equal(saved.records[1].text,'7°C');
+    assert.ok(!JSON.stringify([...f.values.values()]).includes('Private'));
+    assert.equal(f.client.status().slots[0].text,null);
+    const old=f.latest(category,category==='music'?'track':'notification');
+    f.client.refresh();
+    assert.equal(f.packet()[0].status,1,'reconnect/refresh waits for fresh private source data');
+    assert.equal(f.packet()[1].text,'7°C');assert.equal(f.packet()[1].confirmedAt,NOW/1000);
+    old.onData(envelope({shortText:{text:'Late private old source'}}));assert.equal(f.packet()[0].status,1);
+    // Simulate the older cache implementation, which did persist this reading.
+    saved.records[0]={text:'Old private '+category+' body',confirmedAt:NOW/1000,validUntil:NOW/1000+7200};
+    f.values.set('watchface-core-complications-v1',JSON.stringify(saved));
+    const restored=fixture({values:f.values});
+    assert.ok(!JSON.stringify([...restored.values.values()]).includes('Old private'),
+      'legacy private content is removed even before preferences can be read');
+    restored.advance(60000);restored.client.refresh();restored.prefs(selected);
+    assert.equal(restored.packet()[0].status,1);assert.equal(restored.packet()[0].text,'');
+    assert.equal(restored.packet()[1].text,'7°C');assert.equal(restored.packet()[1].confirmedAt,NOW/1000);
+    restored.source(envelope({shortText:{text:'Fresh private '+category+' content'}}),category,category==='music'?'track':'notification');
+    assert.equal(restored.packet()[0].text,'Fresh private '+category+' content');
+    assert.ok(!JSON.stringify([...restored.values.values()]).includes('Fresh private'));
+  }
+});
+
+test('Unclassifiable old selected-reading caches and private semantic records are scrubbed without damaging identified weather records',()=>{
+  const f=fixture();f.client.refresh();f.prefs([preference(0,'weather','location',0,'temperature')]);
+  f.source({instances:[{properties:{temperature:{shortText:{text:'7°C'}}}}]},'weather','location');
+  const saved=JSON.parse(f.values.get('watchface-core-complications-v1'));
+  saved.records[1]={text:'Unclassified private body',confirmedAt:NOW/1000,validUntil:NOW/1000+7200};
+  f.values.set('watchface-core-complications-v1',JSON.stringify(saved));
+  const restored=fixture({values:f.values});
+  const cleaned=JSON.parse(restored.values.get('watchface-core-complications-v1'));
+  assert.equal(cleaned.records[0].text,'7°C');assert.equal(cleaned.records[1],null);
+  cleaned.records[0].semantic.source=3;cleaned.records[0].text='Private mislabeled cache';
+  restored.values.set('watchface-core-complications-v1',JSON.stringify(cleaned));
+  const again=fixture({values:restored.values});
+  assert.ok(!JSON.stringify([...again.values.values()]).includes('Private mislabeled'));
 });

@@ -94,6 +94,80 @@ function readingOf(property) {
     error:property.series ? 'SERIES_UNSUPPORTED' : 'INVALID_DATA'};
 }
 
+function labelOf(slot) {
+  return wire.normalizeText(slot.label || slot.property.replace(/_/g,' '),24);
+}
+function utf8Size(text) {
+  var length=0;
+  for (var i=0; i<text.length; i++) {
+    var point=text.charCodeAt(i);
+    if (point>=0xd800 && point<=0xdbff && text.charCodeAt(i+1)>=0xdc00 && text.charCodeAt(i+1)<=0xdfff) { length+=4; i++; }
+    else { length+=point<0x80 ? 1 : point<0x800 ? 2 : 3; }
+  }
+  return length;
+}
+function semanticOf(slot,property,value) {
+  var kind=wire.SEMANTIC_KIND, source=wire.SOURCE_KIND;
+  var result={kind:kind.GENERIC,source:source.OTHER,label:labelOf(slot)};
+  var weather=slot.category === 'weather' && slot.item === 'location';
+  if (weather) { result.source=source.WEATHER; }
+  else if (slot.category === 'phone') { result.source=source.PHONE; }
+  else if (slot.category === 'music') { result.source=source.MUSIC; }
+  else if (slot.category === 'notifications') { result.source=source.NOTIFICATION; }
+  var numeric=object(property) && property.numericValue;
+  if (object(numeric) && finite(numeric.value) &&
+      (numeric.unit === undefined || typeof numeric.unit === 'string' && numeric.unit.length<=64 && !/[\x00-\x1f\x7f]/.test(numeric.unit))) {
+    result.value=numeric.value;
+    if (numeric.unit) {
+      var unit=wire.normalizeText(numeric.unit);
+      if (utf8Size(unit)<=16) { result.unit=unit; }
+    }
+    if (finite(numeric.min) && finite(numeric.max) && numeric.min<=numeric.max) {
+      result.min=numeric.min; result.max=numeric.max;
+    } else if (numeric.min === undefined && finite(numeric.max)) { result.max=numeric.max; }
+    else if (numeric.max === undefined && finite(numeric.min)) { result.min=numeric.min; }
+    result.kind=kind.NUMBER;
+  } else if (typeof value.booleanValue === 'boolean') {
+    result.kind=kind.BOOLEAN; result.value=value.booleanValue ? 1 : 0;
+  } else if (Number.isInteger(value.timestamp)) { result.kind=kind.TIMESTAMP; }
+  if (weather) {
+    if (['temperature','feels_like','high','low'].indexOf(slot.property)>=0) { result.kind=kind.TEMPERATURE; }
+    else if (slot.property === 'precipitation' && precipitationStyle(slot,property,value)) { result.kind=kind.PRECIPITATION; }
+    else if (slot.property === 'humidity') { result.kind=kind.HUMIDITY; }
+    else if (['wind_speed','wind_direction'].indexOf(slot.property)>=0) { result.kind=kind.WIND; }
+    else if (slot.property === 'uv_index') { result.kind=kind.UV; }
+    else if (slot.property === 'condition' || slot.property === 'condition_code') { result.kind=kind.CONDITION; }
+  } else if (slot.category === 'phone' && slot.item === 'phone_state' && slot.property === 'battery_level') {
+    result.kind=kind.BATTERY;
+  }
+  return result;
+}
+function observationProperties(slot) {
+  if (slot.category !== 'weather' || slot.item !== 'location') { return []; }
+  if (slot.property === 'temperature') { return ['observed_at','is_forecast']; }
+  if (slot.property === 'humidity') { return ['humidity_observed_at']; }
+  if (slot.property === 'wind_speed' || slot.property === 'wind_direction') { return ['wind_observed_at']; }
+  return [];
+}
+function observedAt(slot,instance,receivedAt) {
+  var properties=object(instance) && instance.properties;
+  if (!object(properties)) { return null; }
+  var names=observationProperties(slot);
+  if (!names.length) { return null; }
+  var forecast=properties.is_forecast;
+  if (slot.property === 'temperature' && object(forecast) && object(forecast.boolean) && forecast.boolean.value === true) { return null; }
+  var observation=properties[names[0]];
+  var stamp=object(observation) && object(observation.timestamp) && observation.timestamp.value;
+  return Number.isInteger(stamp) && stamp>0 && stamp<=receivedAt ? stamp : null;
+}
+function privateDescriptor(slot) {
+  return slot && (slot.category === 'music' || slot.category === 'notifications');
+}
+function privateRecord(record) {
+  return record && record.semantic && (record.semantic.source === wire.SOURCE_KIND.MUSIC ||
+    record.semantic.source === wire.SOURCE_KIND.NOTIFICATION);
+}
+
 // A percentage alone is not evidence of rain. Only Pebble's standard weather
 // precipitation reading may request the droplet presentation, and its text
 // must still be a usable probability in the provider's own format.
@@ -124,6 +198,7 @@ module.exports = function(options) {
   var states = [0,0];
   var errors = ['',''];
   var messages = ['',''];
+  var fromCache = [false,false];
   var hasPreferences = false;
   var signature = '';
   var preferenceGeneration = 0;
@@ -149,16 +224,40 @@ module.exports = function(options) {
       record.validUntil <= record.confirmedAt + MAX_AGE;
   }
   function save() {
-    try { options.storage.setItem(cacheKey, JSON.stringify({signature:signature, records:records})); } catch (ignored) {}
+    var cacheable=records.map(function(record,i) {
+      return privateDescriptor(descriptors[i]) || privateRecord(record) ? null : record;
+    });
+    try { options.storage.setItem(cacheKey, JSON.stringify({signature:signature, records:cacheable})); } catch (ignored) {}
+  }
+  function sanitizeStoredCache() {
+    try {
+      var cached=JSON.parse(options.storage.getItem(cacheKey));
+      if (!cached || !Array.isArray(cached.records)) { return; }
+      var encoded=typeof cached.signature === 'string' ? cached.signature : '';
+      var choices;
+      try { choices=JSON.parse(encoded.indexOf('two:') === 0 ? encoded.slice(4) : encoded); } catch (ignored) {}
+      var changed=false;
+      var safe=cached.records.map(function(record,i) {
+        // Legacy cache descriptors still identify music and notification data.
+        // Unclassifiable records are discarded rather than retained privately
+        // while the preview API or preference permission is unavailable.
+        if (record && (!Array.isArray(choices) || !choices[i] || privateDescriptor(choices[i]) || privateRecord(record))) {
+          changed=true; return null;
+        }
+        return record;
+      });
+      if (changed) { options.storage.setItem(cacheKey,JSON.stringify({signature:cached.signature,records:safe})); }
+    } catch (ignored) {}
   }
   function load() {
     try {
       var cached = JSON.parse(options.storage.getItem(cacheKey));
       if (!cached || cached.signature !== signature || !Array.isArray(cached.records) || cached.records.length !== VISIBLE_SLOTS) { return; }
       cached.records.forEach(function(record, i) {
-        if (descriptors[i] && !descriptors[i].invalid && valid(record) &&
+        if (descriptors[i] && !descriptors[i].invalid && !privateDescriptor(descriptors[i]) && !privateRecord(record) && valid(record) &&
             wire.packComplications([rendered(record)], now())[7] === STATUS.READY) {
           records[i] = record; states[i] = STATUS.READY;
+          fromCache[i]=true;
         }
       });
     } catch (ignored) {}
@@ -200,20 +299,20 @@ module.exports = function(options) {
     function attempt(number) {
       if (generation !== deliveryGeneration) { return; }
       var done = false;
-      function finish(ok) {
+      function finish(ok,error) {
         if (done || generation !== deliveryGeneration) { return; }
         done = true;
         options.cancelLater(deliveryTimer); deliveryTimer = null;
-        if (!ok && !pending && number < 3) {
+        if (!ok && (!error || error.code !== 'SUPERSEDED') && !pending && number < 3) {
           deliveryTimer = options.later(function() { attempt(number + 1); }, number * 1000);
           return;
         }
         sending = false;
-        if (!ok && options.log) { options.log('Complication delivery failed'); }
+        if (!ok && (!error || error.code !== 'SUPERSEDED') && options.log) { options.log('Complication delivery failed'); }
         pump();
       }
       deliveryTimer = options.later(function() { finish(false); }, 10000);
-      try { options.send(payload, function() { finish(true); }, function() { finish(false); }); }
+      try { options.send(payload, function() { finish(true); }, function(error) { finish(false,error); }); }
       catch (ignored) { finish(false); }
     }
     attempt(1);
@@ -236,6 +335,7 @@ module.exports = function(options) {
     });
     var payload = {};
     payload[options.keys.COMPLICATION_DATA] = wire.packComplications(slots, now());
+    if (options.send.supersedesSnapshots && sending) { cancelDelivery(); }
     pending = payload; pump();
   }
   function scheduleExpiry() {
@@ -276,6 +376,9 @@ module.exports = function(options) {
       var group = groups[key];
       group.slots.push(i);
       if (group.properties.indexOf(slot.property) < 0) { group.properties.push(slot.property); }
+      observationProperties(slot).forEach(function(name) {
+        if (group.properties.indexOf(name)<0) { group.properties.push(name); }
+      });
     });
     Object.keys(groups).forEach(function(key) {
       if (generation !== sourceGeneration) { return; }
@@ -303,8 +406,13 @@ module.exports = function(options) {
                 var instance = envelope.instances[slot.index];
                 var property = instance && object(instance.properties) && instance.properties[slot.property];
                 var parsed = readingOf(property);
-                if (parsed.value) { parsed.value.displayKind = precipitationStyle(slot, property, parsed.value); }
+                if (parsed.value) {
+                  parsed.value.displayKind = precipitationStyle(slot, property, parsed.value);
+                  parsed.value.semantic=semanticOf(slot,property,parsed.value);
+                  parsed.value.observedAt=observedAt(slot,instance,confirmedAt);
+                }
                 states[i] = parsed.status; errors[i] = parsed.error || '';
+                fromCache[i]=false;
                 records[i] = parsed.value ? Object.assign({}, parsed.value, {confirmedAt:confirmedAt,validUntil:until}) : null;
               });
             }
@@ -325,6 +433,8 @@ module.exports = function(options) {
       var p = instance.properties || {};
       var slot = {category:textOf(p.category),item:textOf(p.item),property:textOf(p.property),
         index:object(p.index) && object(p.index.numericValue) ? p.index.numericValue.value : null};
+      var label=textOf(p.label);
+      if (typeof label === 'string' && label.trim()) { slot.label=wire.normalizeText(label,24); }
       if (seen[i] || !identifier(slot.category) || !identifier(slot.item) || !identifier(slot.property) ||
           !Number.isSafeInteger(slot.index) || slot.index < 0) { slot = {invalid:true}; }
       seen[i] = true; next[i] = slot;
@@ -339,6 +449,7 @@ module.exports = function(options) {
     cancelRecovery(); closeSources(); cancelDelivery();
     descriptors = next; signature = nextSignature; hasPreferences = true;
     records = [null,null];
+    fromCache = [false,false];
     states = descriptors.map(function(slot) { return !slot ? STATUS.EMPTY : slot.invalid ? STATUS.UNSUPPORTED : STATUS.LOADING; });
     errors = descriptors.map(function(slot) { return slot && slot.invalid ? 'INVALID_PREFERENCE' : ''; });
     messages = ['',''];
@@ -353,10 +464,22 @@ module.exports = function(options) {
       preferenceGeneration++;
       try { if (preferenceSubscription && preferenceSubscription.unsubscribe) { preferenceSubscription.unsubscribe(); } } catch (ignored) {}
       preferenceSubscription = null;
-      closeSources(); cancelDelivery(); states = [3,3]; records = [null,null];
+      closeSources(); cancelDelivery(); states = [3,3]; records = [null,null]; fromCache = [false,false];
       errors = ['API_UNAVAILABLE','API_UNAVAILABLE'];
       messages = ['',''];
       preferenceError = 'API_UNAVAILABLE'; preferenceMessage = ''; publish(); return;
+    }
+    var privateCleared=false;
+    records.forEach(function(record,i) {
+      if (record && (privateDescriptor(descriptors[i]) || privateRecord(record))) {
+        records[i]=null; states[i]=STATUS.LOADING; errors[i]=''; messages[i]=''; fromCache[i]=false;
+        privateCleared=true;
+      }
+    });
+    if (privateCleared) {
+      // Reconnect/refresh requires a new source delivery for private readings.
+      // Retain ordinary cached weather with its original receipt timestamp.
+      closeSources(); publish(); save(); scheduleExpiry();
     }
     var alreadyConfigured = hasPreferences;
     var previousSourceGeneration = sourceGeneration;
@@ -376,14 +499,23 @@ module.exports = function(options) {
     scheduleRecovery();
     refreshTimer = options.later(function() { refreshTimer = null; refresh(); }, REFRESH);
   }
+  sanitizeStoredCache();
   return {refresh:refresh,configure:function() { publish(); scheduleExpiry(); },status:function() {
     var firstError = -1;
     for (var i = 0; i < errors.length; i++) { if (errors[i]) { firstError = i; break; } }
     return {available:available,configured:descriptors.filter(function(slot) { return slot; }).length,
       ready:records.filter(valid).length,error:preferenceError || errors.filter(function(error) { return error; })[0] || '',
       message:preferenceError ? preferenceMessage : firstError >= 0 ? messages[firstError] : '',
-      slots:descriptors.map(function(slot, i) { return {slot:i+1,category:slot && slot.category || '',item:slot && slot.item || '',
+      slots:descriptors.map(function(slot, i) {
+        var record=records[i], received=record && record.confirmedAt || null;
+        var observed=record && Number.isInteger(record.observedAt) && record.observedAt>0 && record.observedAt<=now() ? record.observedAt : null;
+        var safe=slot && (slot.category === 'weather' && slot.item === 'location' || slot.category === 'phone' && slot.item === 'phone_state');
+        return {slot:i+1,category:slot && slot.category || '',item:slot && slot.item || '',
         index:slot && slot.index !== undefined ? slot.index : null,property:slot && slot.property || '',
-        status:NAMES[records[i] && !valid(records[i]) ? STATUS.UNAVAILABLE : states[i]],error:errors[i],message:messages[i]}; })};
+        label:slot && !slot.invalid ? labelOf(slot) : '',
+        text:safe && valid(record) && typeof record.text === 'string' ? record.text : null,
+        receivedAt:received,receivedAgeSec:received === null ? null : Math.max(0,now()-received),
+        observedAt:observed,observationAgeSec:observed === null ? null : now()-observed,cached:!!fromCache[i],
+        status:NAMES[record && !valid(record) ? STATUS.UNAVAILABLE : states[i]],error:errors[i],message:messages[i]}; })};
   }};
 };

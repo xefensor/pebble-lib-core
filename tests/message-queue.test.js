@@ -112,3 +112,52 @@ test('Context playback/event sidecars are copied and superseded atomically with 
   send({setting:1});send({23:[1],40:state});send({23:[2],40:new Uint8Array([8,0,0,0,2,0,0,0,0])});
   custom[0].success();assert.deepEqual(custom[1].payload,{23:[2],40:[8,0,0,0,2,0,0,0,0]});
 });
+
+test('Host-declared activity snapshots replace their own waiting data and sidecars atomically',()=>{
+  const calls=[],events=[];
+  const send=createQueue({keys:{ACTIVITY_DATA:41,ACTIVITY_SESSION:42},
+    snapshotChannels:[{name:'activities',dataKey:'ACTIVITY_DATA',sidecarKeys:['ACTIVITY_SESSION']}],
+    send:(payload,success)=>calls.push({payload,success}),later:()=>1,cancelLater:()=>{}});
+  send({setting:1});
+  const old=new Uint8Array([1,2]);
+  send({41:old,42:5},()=>assert.fail('superseded activity ACK'),e=>events.push(e.code));
+  old[0]=99;
+  send({10023:[7],10024:2});
+  send({setting:2});
+  const latest=new Uint8Array([3,4]),session=new Uint8Array([6]);
+  send({41:latest,42:session},()=>events.push('accepted'));
+  latest[0]=99;session[0]=99;
+  assert.deepEqual(events,['SUPERSEDED']);
+  calls[0].success();assert.deepEqual(calls[1].payload,{10023:[7],10024:2});
+  calls[1].success();assert.deepEqual(calls[2].payload,{setting:2});
+  calls[2].success();assert.deepEqual(calls[3].payload,{41:[3,4],42:[6]});
+  assert.deepEqual(events,['SUPERSEDED']);
+  calls[3].success();assert.deepEqual(events,['SUPERSEDED','accepted']);
+});
+
+test('Extension commands and mixed settings remain FIFO while named snapshots can coalesce',()=>{
+  const calls=[],events=[];
+  const send=createQueue({keys:{ACTIVITY_DATA:41,ACTIVITY_SESSION:42},
+    snapshotChannels:[{name:'activities',dataKey:'ACTIVITY_DATA',sidecarKeys:['ACTIVITY_SESSION']}],
+    send:(payload,success)=>calls.push({payload,success}),later:()=>1,cancelLater:()=>{}});
+  send({active:1});
+  send({42:7}); // A request/command without data is never replaceable.
+  send({41:[1],setting:99});
+  send({ACTIVITY_DATA:[2],ACTIVITY_SESSION:7},null,e=>events.push(e.code));
+  send({ACTIVITY_DATA:[3],ACTIVITY_SESSION:8});
+  assert.deepEqual(events,['SUPERSEDED']);
+  calls[0].success();assert.deepEqual(calls[1].payload,{42:7});
+  calls[1].success();assert.deepEqual(calls[2].payload,{41:[1],setting:99});
+  calls[2].success();assert.deepEqual(calls[3].payload,{ACTIVITY_DATA:[3],ACTIVITY_SESSION:8});
+  calls[3].success();
+});
+
+test('Extension declarations cannot accidentally reuse legacy or ambiguous snapshot channels',()=>{
+  const base={send:()=>{},later:()=>1,cancelLater:()=>{}};
+  for(const snapshotChannels of [false,{},[{name:'context',dataKey:41}],
+    [{name:'activities',dataKey:'CONTEXT_DATA'}],
+    [{name:'a',dataKey:41},{name:'b',dataKey:41}],
+    [{name:'a',dataKey:NaN}],[{name:'a',dataKey:41,sidecarKeys:'bad'}]]) {
+    assert.throws(()=>createQueue({...base,snapshotChannels}),TypeError);
+  }
+});

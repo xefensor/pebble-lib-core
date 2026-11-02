@@ -1,12 +1,73 @@
-# Host contract — 0.4.1
+# Host contract — 0.5.0
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
 
-This contract describes the 0.4.1 library. See the [project README](../README.md)
+This contract describes 0.5.0, including the legacy 0.4.1 context interface. See the [project README](../README.md)
 for package downloads, [release guide](GITHUB-RELEASES.md) for publishing, and
 [maintainer notes](../AGENTS.md) for validation and change boundaries. A new
 Core release does not change an installed or pinned consumer automatically.
+
+## Readings only integration
+
+Hosts using an independent activity engine should include `readings.h` and
+create a `WfcReadings`. This additive type contains the five-slot reading
+packet, public cache, freshness flags and connection state, without the separate
+legacy context allocation. The five records preserve the released wire format;
+the complication coordinator still selects only the first two global choices.
+The old `WatchfaceCore` type, layout and function signatures remain unchanged.
+
+| Function | Host action |
+| --- | --- |
+| `wfc_readings_init(state, config, connected)` | Initialize with optional `WfcConfig` storage/change callbacks |
+| `wfc_readings_load_cache(state, now)` | Restore original receipt/expiry/provenance from the same eight-key namespace |
+| `wfc_readings_receive(state, bytes, length, now)` | Validate and apply a reading snapshot; invalid input clears live state and cache |
+| `wfc_readings_connection_changed(state, connected)` | Forward connection transitions; unknown/private selected readings clear immediately |
+| `wfc_readings_tick(state, now)` | Check ready-to-expired transitions and the connected 30-minute refresh interval |
+| `wfc_readings_request_accepted(state, now)` | Record when the host accepted a new reading request for delivery |
+| `wfc_readings_clear_cache(state)` | Remove the configured cache keys |
+
+On the phone, `require('pebble-watchface-core/readings')` exports
+`createComplications`, `createMessageQueue` and `wire`, without loading
+`createContext`. The SDK archive also contains `src/js/readings` for hosts that
+use explicit source entrypoints. No services, handlers or activity sessions are
+registered by either entrypoint.
+
+Both native state types compile the same shared cache/freshness implementation.
+There is no cast between their different layouts or macro-dependent public
+layout. A consumer must still rebuild against its pinned 0.5.0 package.
+
+### Additional snapshot channels
+
+An independent engine can share the host queue through explicit declarations:
+
+```js
+var send = core.createMessageQueue({
+  keys: messageKeys,
+  snapshotChannels: [{
+    name: 'activities',
+    dataKey: 'ACTIVITY_DATA',
+    sidecarKeys: ['ACTIVITY_SESSION']
+  }],
+  send: transportSend,
+  later: setTimeout,
+  cancelLater: clearTimeout
+});
+```
+
+`dataKey` and `sidecarKeys` accept a generated message-key name or numeric key.
+Names also resolve through `keys`, permitting either named or numeric payloads.
+There can be at most 16 additional channels; names and data-key identities must
+be distinct and may not replace Core's complication/context channels. A
+snapshot must contain exactly one alias of its byte-array data key and only
+its declared sidecar fields. Any mixed settings payload, request without data,
+or unrecognized payload retains FIFO ordering. Queue registration is a host
+protocol decision, not permission to coalesce commands.
+
+Only pending snapshots in the same channel are replaced. Their copied data and
+sidecars settle together, superseded callbacks fail with `SUPERSEDED`, and an
+active send only succeeds after the transport callback. This preserves one
+dispatcher and one serialized AppMessage queue for all host traffic.
 
 ## Phone side
 

@@ -10,6 +10,42 @@ module.exports = function createMessageQueue(options) {
   var complicationKey=named('COMPLICATION_DATA',10021), contextKey=named('CONTEXT_DATA',10023);
   var contextRequestKey=named('REQUEST_CONTEXT',10024);
   var contextStateKey=named('CONTEXT_STATE',10025);
+  // A host can register another bounded snapshot channel without giving the
+  // queue ownership of its protocol. Its data and session/event sidecars stay
+  // one dictionary; unlisted fields (including settings) retain FIFO order.
+  function aliases(key) {
+    if ((typeof key !== 'string' && typeof key !== 'number') || String(key) === '' ||
+        (typeof key === 'number' && (!isFinite(key) || key<0 || key>4294967295 || key%1))) {
+      throw new TypeError('A snapshot key must be a message-key name or number');
+    }
+    var values=[String(key)];
+    if (Object.prototype.hasOwnProperty.call(keys,key)) {
+      var mapped=String(keys[key]);
+      if (values.indexOf(mapped)<0) { values.push(mapped); }
+    }
+    return values;
+  }
+  var declarations=options.snapshotChannels === undefined ? [] : options.snapshotChannels;
+  if (!Array.isArray(declarations) || declarations.length>16) {
+    throw new TypeError('snapshotChannels must be an array of at most 16 channels');
+  }
+  var channelNames=['complications','context'], dataNames=[];
+  var extensions=declarations.map(function(spec) {
+    if (!spec || typeof spec.name !== 'string' || !spec.name || channelNames.indexOf(spec.name)>=0 ||
+        !Array.isArray(spec.sidecarKeys === undefined ? [] : spec.sidecarKeys)) {
+      throw new TypeError('A snapshot channel needs a unique name and sidecar key array');
+    }
+    var data=aliases(spec.dataKey), allowed=data.slice();
+    var reserved=[complicationKey,contextKey,'COMPLICATION_DATA','CONTEXT_DATA'];
+    if (data.some(function(key) { return reserved.indexOf(key)>=0 || dataNames.indexOf(key)>=0; })) {
+      throw new TypeError('Snapshot data keys must identify a distinct channel');
+    }
+    (spec.sidecarKeys || []).forEach(function(key) {
+      aliases(key).forEach(function(value) { if (allowed.indexOf(value)<0) { allowed.push(value); } });
+    });
+    channelNames.push(spec.name);dataNames=dataNames.concat(data);
+    return {name:spec.name,data:data,allowed:allowed};
+  });
   function byteArray(value) {
     return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Uint8Array]';
   }
@@ -23,6 +59,13 @@ module.exports = function createMessageQueue(options) {
       return name === contextKey || name === 'CONTEXT_DATA' || name === contextRequestKey || name === 'REQUEST_CONTEXT' ||
         name === contextStateKey || name === 'CONTEXT_STATE';
     }) && byteArray(payload[contextKey] === undefined ? payload.CONTEXT_DATA : payload[contextKey])) { return 'context'; }
+    for (var i=0;i<extensions.length;i++) {
+      var spec=extensions[i];
+      var present=names.filter(function(name) { return spec.data.indexOf(name)>=0; });
+      if (present.length === 1 && byteArray(payload[present[0]]) && names.every(function(name) {
+        return spec.allowed.indexOf(name)>=0;
+      })) { return spec.name; }
+    }
     // Mixed payloads may contain user settings; they always retain FIFO order.
     return '';
   }

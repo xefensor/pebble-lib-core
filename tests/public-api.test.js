@@ -6,6 +6,18 @@ const path=require('node:path');
 const api=require('../src/js');
 const fixtures=require('./fixtures/protocol-v2.json');
 
+test('The readings-only entrypoint excludes the legacy context coordinator',()=>{
+  const lean=require('../src/js/readings');
+  assert.deepEqual(Object.keys(lean).sort(),['createComplications','createMessageQueue','wire']);
+  assert.equal(lean.createComplications,api.createComplications);
+  assert.equal(lean.createMessageQueue,api.createMessageQueue);
+  const child=require('node:child_process');
+  const entry=path.resolve(__dirname,'../src/js/readings');
+  const loaded=JSON.parse(child.execFileSync(process.execPath,['-e',
+    'require('+JSON.stringify(entry)+');console.log(JSON.stringify(Object.keys(require.cache)))'],{encoding:'utf8'}));
+  assert.equal(loaded.some(name=>name.endsWith(path.sep+'context.js')),false);
+});
+
 test('The public entrypoint exposes only host-configured coordinators and wire helpers',()=>{
   assert.deepEqual(Object.keys(api).sort(),['createComplications','createContext','createMessageQueue','wire']);
   assert.equal(api.createComplications,require('../src/js/complications'));

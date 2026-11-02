@@ -1,11 +1,11 @@
 # Pebble Watchface Core
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). The current release,
-**0.4.1**, provides two selected readings and transient music, notification and
-phone context for Emery (Pebble Time 2). It preserves precise reading identity,
-expiry and privacy; 0.4.1 fixes clearing of fully redacted or newly filtered
-active and queued notifications.
+and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version **0.5.0**
+adds a readings-only integration for hosts adopting an independent activity
+engine. It preserves the legacy context API and v1–v4 reading packets. The
+release assets below are version-pinned to **0.5.0**; the published 0.4.1
+artifacts remain frozen.
 
 The package is compiled into each watchface's PBW. Users install a watchface;
 there is no separate core app or background service to install. A core update
@@ -13,18 +13,18 @@ reaches users when a consuming watchface is rebuilt and released.
 
 ## Download and release status
 
-[Core 0.4.1 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.4.1)
-is published with these verified assets:
+[Core 0.5.0 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.5.0)
+provides these versioned assets:
 
 | Download | Use |
 | --- | --- |
-| [pebble-watchface-core-0.4.1.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/pebble-watchface-core-0.4.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
-| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
-| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.4.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
+| [pebble-watchface-core-0.5.0.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/pebble-watchface-core-0.5.0.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
+| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
+| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/SHA256SUMS.txt) | Flat checksums for both downloaded files |
 
 Download both packages and the checksum file into one directory, then run
 `sha256sum -c SHA256SUMS.txt`. The release tag identifies the
-[frozen 0.4.1 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.4.1).
+[frozen 0.5.0 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.5.0).
 Later documentation and automation updates on `main` do not replace those files.
 
 GitHub Actions publishes future packaged versions after their tests and artifact
@@ -58,7 +58,25 @@ wire format still contains five bounded records for compatibility. It does not
 supply a weather provider, timer integration or playback controls. Source
 availability and permissions remain the Pebble phone app's responsibility.
 
-## Version 0.4.1
+## Version 0.5.0
+
+- A new `WfcReadings` state and `readings.h` API retain the existing cache,
+  freshness, private-reading clearing and reconnect behaviour without allocating
+  the legacy context record set. `WatchfaceCore` remains compatible.
+- `require('pebble-watchface-core/readings')` supplies complications, wire and
+  the shared queue without importing the legacy context coordinator. The
+  equivalent `src/js/readings` entrypoint is included in the SDK package.
+- Hosts can register bounded snapshot channels with `snapshotChannels` so an
+  independent activity engine can share the existing queue. State data and its
+  declared sidecars replace obsolete waiting snapshots together; settings and
+  commands retain FIFO order. Transport ACK semantics remain unchanged.
+- The independent activity library owns new activity providers and timer
+  sharing. Core neither depends on that library nor registers a second
+  dispatcher. Existing `createContext` consumers can migrate independently.
+- The package filenames are `pebble-watchface-core-0.5.0.tgz` and
+  `dist.zip`; native SDK packaging and consumer rendering are separate checks.
+
+## Historical version 0.4.1
 
 - Fully redacted, malformed or newly filtered notifications clear active text immediately.
 - Queued notification replacements are revalidated against each source snapshot, so a private preview cannot appear after its source has been redacted.
@@ -125,8 +143,28 @@ availability and permissions remain the Pebble phone app's responsibility.
 
 ## Use from a watchface
 
+For a new host with an independent activity engine, use the lean entrypoints:
+
+```c
+#include <pebble-watchface-core/readings.h>
+```
+
+```js
+var core = require('pebble-watchface-core/readings');
+var send = core.createMessageQueue(transportOptions);
+var complications = core.createComplications(complicationOptions);
+```
+
+The host creates a `WfcReadings`, calls `wfc_readings_init`, routes complication
+bytes through `wfc_readings_receive`, and forwards connection changes and minute
+ticks. Context/activity sessions, presentation and message handlers remain
+outside this lean state. It reads the same persistent cache namespace as the
+legacy API and does not renew a restored value's original times.
+
+The following legacy entrypoints remain available for pinned consumers:
+
 Consumers pin an independently selected release tarball, such as
-`vendor/pebble-watchface-core-0.4.1.tgz`, reference it with a `file:` dependency,
+`vendor/pebble-watchface-core-0.5.0.tgz`, reference it with a `file:` dependency,
 and commit `package-lock.json`. `vendor/CORE.json` records the upstream version
 and archive checksum. This supports `npm ci` without an npm publishing account
 or a dependency on a changing Git branch.

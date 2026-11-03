@@ -33,7 +33,7 @@ different SDK. See [the release guide](docs/GITHUB-RELEASES.md) for the packagin
 trigger and rerun rules, and [AGENTS.md](AGENTS.md) for maintainer instructions.
 
 Publishing Core does **not** update installed watchfaces or their dependencies.
-Dynamic 0.16.0 uses the 0.5.1 candidate; Halftone retains its independent pin. Each consumer is upgraded,
+Dynamic 0.16.0 pins 0.5.1; Halftone retains its independent pin. Each consumer is upgraded,
 built, visually checked and released independently. Core is not a separate
 watch app, a background service or an appstore submission.
 

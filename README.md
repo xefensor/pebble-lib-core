@@ -13,18 +13,18 @@ reaches users when a consuming watchface is rebuilt and released.
 
 ## Download and release status
 
-[Core 0.5.0 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.5.0)
+[Core 0.5.0 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.5.1)
 provides these versioned assets:
 
 | Download | Use |
 | --- | --- |
-| [pebble-watchface-core-0.5.0.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/pebble-watchface-core-0.5.0.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
-| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
-| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.0/SHA256SUMS.txt) | Flat checksums for both downloaded files |
+| [pebble-watchface-core-0.5.1.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/pebble-watchface-core-0.5.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
+| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
+| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
 
 Download both packages and the checksum file into one directory, then run
 `sha256sum -c SHA256SUMS.txt`. The release tag identifies the
-[frozen 0.5.0 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.5.0).
+[frozen 0.5.0 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.5.1).
 Later documentation and automation updates on `main` do not replace those files.
 
 GitHub Actions publishes future packaged versions after their tests and artifact
@@ -33,7 +33,7 @@ different SDK. See [the release guide](docs/GITHUB-RELEASES.md) for the packagin
 trigger and rerun rules, and [AGENTS.md](AGENTS.md) for maintainer instructions.
 
 Publishing Core does **not** update installed watchfaces or their dependencies.
-Dynamic currently pins 0.4.1; Halftone retains 0.1.0. Each consumer is upgraded,
+Dynamic 0.16.0 uses the 0.5.1 candidate; Halftone retains its independent pin. Each consumer is upgraded,
 built, visually checked and released independently. Core is not a separate
 watch app, a background service or an appstore submission.
 
@@ -58,7 +58,15 @@ wire format still contains five bounded records for compatibility. It does not
 supply a weather provider, timer integration or playback controls. Source
 availability and permissions remain the Pebble phone app's responsibility.
 
-## Version 0.5.0
+## Version 0.5.1
+
+- Activity hosts can validate the complete context packet and retain only a
+  12-byte `WfcPhoneStatus`, using `wfc_context_phone_status_read`. The decoder
+  is shared with readings; private music/notification payloads are never copied.
+- Existing full-context and wire APIs remain compatible. Validation-only context
+  reads avoid a redundant generic validation pass.
+
+## Historical version 0.5.0
 
 - A new `WfcReadings` state and `readings.h` API retain the existing cache,
   freshness, private-reading clearing and reconnect behaviour without allocating
@@ -73,7 +81,7 @@ availability and permissions remain the Pebble phone app's responsibility.
 - The independent activity library owns new activity providers and timer
   sharing. Core neither depends on that library nor registers a second
   dispatcher. Existing `createContext` consumers can migrate independently.
-- The package filenames are `pebble-watchface-core-0.5.0.tgz` and
+- The package filenames are `pebble-watchface-core-0.5.1.tgz` and
   `dist.zip`; native SDK packaging and consumer rendering are separate checks.
 
 ## Historical version 0.4.1
@@ -164,7 +172,7 @@ legacy API and does not renew a restored value's original times.
 The following legacy entrypoints remain available for pinned consumers:
 
 Consumers pin an independently selected release tarball, such as
-`vendor/pebble-watchface-core-0.5.0.tgz`, reference it with a `file:` dependency,
+`vendor/pebble-watchface-core-0.5.1.tgz`, reference it with a `file:` dependency,
 and commit `package-lock.json`. `vendor/CORE.json` records the upstream version
 and archive checksum. This supports `npm ci` without an npm publishing account
 or a dependency on a changing Git branch.

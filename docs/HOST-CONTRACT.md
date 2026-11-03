@@ -1,9 +1,9 @@
-# Host contract — 0.5.0
+# Host contract — 0.5.1
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
 
-This contract describes 0.5.0, including the legacy 0.4.1 context interface. See the [project README](../README.md)
+This contract describes 0.5.1, including the legacy 0.4.1 context interface. See the [project README](../README.md)
 for package downloads, [release guide](GITHUB-RELEASES.md) for publishing, and
 [maintainer notes](../AGENTS.md) for validation and change boundaries. A new
 Core release does not change an installed or pinned consumer automatically.
@@ -260,3 +260,15 @@ against those native alerts.
 The shared queue recognizes `CONTEXT_STATE` as part of a pure context snapshot,
 copies its bytes, and replaces it atomically with the corresponding context
 and baseline marker. A host must not queue this sidecar separately.
+
+## Status-only context adapter (0.5.1)
+
+`wfc_context_phone_status_read(bytes, length, output)` validates every field in
+the complete legacy context packet, including discarded private roles, then
+retains only phone percentage, original confirmation/expiry and readiness in
+`WfcPhoneStatus` (12 bytes on Emery). Invalid input leaves output unchanged;
+NULL output validates without retaining data. The host clears state on failure
+and owns baseline/session validation, notification effects and expiry timers.
+`wfc_phone_status_fresh(status, now)` preserves the legacy future-tolerance and
+original expiry. This API does not renew source observations or change the
+full-context API, wire format, cache or service ownership.

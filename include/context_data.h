@@ -77,7 +77,7 @@ static inline bool context_read(const uint8_t *bytes, size_t length,
     at += header + text_length + (bytes[0] >= 3 ? record[22] + record[23] : 0) +
         ((flags & COMPLICATION_FLAG_BITMAP) ? COMPLICATION_PALETTE_BYTES + pixels : 0);
   }
-  return complications_read(bytes, length, result);
+  return result == NULL || complications_read(bytes, length, result);
 }
 
 // A phone transport may still hold an older copied snapshot when the watch

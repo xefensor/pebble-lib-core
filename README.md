@@ -1,10 +1,14 @@
 # Pebble Watchface Core
 
+Repository: [pebble-lib-core](https://github.com/xefensor/pebble-lib-core), part of
+XOCE — Xef's Open Computing Ecosystem. The package remains
+`pebble-watchface-core`; see the [repository migration notes](docs/REPOSITORY-MIGRATION.md).
+
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/dynamic-watchface). Version **0.5.0**
-adds a readings-only integration for hosts adopting an independent activity
-engine. It preserves the legacy context API and v1–v4 reading packets. The
-release assets below are version-pinned to **0.5.0**; the published 0.4.1
+and [Dynamic](https://github.com/xefensor/pebble-watchface-dynamic). Version **0.5.1**
+adds a lightweight status-only context adapter alongside the readings-only
+integration introduced in 0.5.0. It preserves the legacy context API and v1–v4
+reading packets. The release assets below are version-pinned to **0.5.1**; earlier
 artifacts remain frozen.
 
 The package is compiled into each watchface's PBW. Users install a watchface;
@@ -13,18 +17,18 @@ reaches users when a consuming watchface is rebuilt and released.
 
 ## Download and release status
 
-[Core 0.5.0 on GitHub Releases](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.5.1)
+[Core 0.5.1 on GitHub Releases](https://github.com/xefensor/pebble-lib-core/releases/tag/v0.5.1)
 provides these versioned assets:
 
 | Download | Use |
 | --- | --- |
-| [pebble-watchface-core-0.5.1.tgz](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/pebble-watchface-core-0.5.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
-| [dist.zip](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
-| [SHA256SUMS.txt](https://github.com/xefensor/pebble-watchface-core/releases/download/v0.5.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
+| [pebble-watchface-core-0.5.1.tgz](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/pebble-watchface-core-0.5.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
+| [dist.zip](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
+| [SHA256SUMS.txt](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
 
 Download both packages and the checksum file into one directory, then run
 `sha256sum -c SHA256SUMS.txt`. The release tag identifies the
-[frozen 0.5.0 source](https://github.com/xefensor/pebble-watchface-core/tree/v0.5.1).
+[frozen 0.5.1 source](https://github.com/xefensor/pebble-lib-core/tree/v0.5.1).
 Later documentation and automation updates on `main` do not replace those files.
 
 GitHub Actions publishes future packaged versions after their tests and artifact

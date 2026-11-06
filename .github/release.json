@@ -1,5 +1,5 @@
 {
-  "repository": "xefensor/pebble-watchface-core",
+  "repository": "xefensor/pebble-lib-core",
   "kind": "core",
   "display_name": "Pebble Watchface Core",
   "tag_prefix": "v",
@@ -14,7 +14,7 @@
     "heading": "## Version {version}"
   },
   "bootstrap": {
-    "version": "0.4.1",
-    "source_commit": "6a6fb32e5a52d146e60d32fd6ee1b92e67722ada"
+    "version": "0.5.1",
+    "source_commit": "a3e344651df22333f24bf52e7af9a10c2a1810cd"
   }
 }

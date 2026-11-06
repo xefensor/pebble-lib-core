@@ -70,7 +70,7 @@ out of repository files and output.
 Published artifacts and tags stay frozen. A docs-only update on `main` does not
 repackage an existing version. For an unpublished version being prepared,
 regenerate packages after changes that affect their contents. The bootstrap
-configuration identifies only the original tested 0.4.1 artifact commit; future
+configuration identifies the original tested 0.5.1 artifact commit; future
 versions use their own artifact commit.
 
 Consumers pin Core independently. Publishing here must not silently change
@@ -78,3 +78,11 @@ Dynamic or Halftone. A consumer upgrade updates the tarball, file dependency,
 lockfile and `vendor/CORE.json` together, then gets its own build, visual checks
 and release. Current pins are recorded by each consumer, not inferred from
 Core's latest GitHub release.
+
+## Repository identity
+
+The XOCE repository is `xefensor/pebble-lib-core`; its public package name remains
+`pebble-watchface-core`. Keep import/include paths and archive filenames compatible.
+Repository metadata and documentation edits do not repackage published bytes.
+The 0.5.1 bootstrap retains source `a3e344651df22333f24bf52e7af9a10c2a1810cd`;
+see [repository migration notes](docs/REPOSITORY-MIGRATION.md).

@@ -1,7 +1,7 @@
 # GitHub releases
 
-[Core 0.4.1](https://github.com/xefensor/pebble-watchface-core/releases/tag/v0.4.1)
-is published. The repository's [Releases page](https://github.com/xefensor/pebble-watchface-core/releases)
+[Core 0.5.1](https://github.com/xefensor/pebble-lib-core/releases/tag/v0.5.1)
+is published. The repository's [Releases page](https://github.com/xefensor/pebble-lib-core/releases)
 contains the versioned downloads; [README.md](../README.md) explains which
 package a consumer needs and [AGENTS.md](../AGENTS.md) records maintainer rules.
 
@@ -11,10 +11,10 @@ continues to use its committed tarball until deliberately upgraded and released.
 
 ## Current frozen release
 
-The `v0.4.1` tag points to the already-tested artifact commit
-`6a6fb32e5a52d146e60d32fd6ee1b92e67722ada`. Its assets are:
+The `v0.5.1` tag points to the already-tested artifact commit
+`a3e344651df22333f24bf52e7af9a10c2a1810cd`. Its assets are:
 
-- `pebble-watchface-core-0.4.1.tgz` — the pinned consumer package.
+- `pebble-watchface-core-0.5.1.tgz` — the pinned consumer package.
 - `dist.zip` — the compiled Pebble SDK library and exported headers/JavaScript.
 - `SHA256SUMS.txt` — flat filenames for checking downloaded files together.
 
@@ -80,8 +80,12 @@ rebuild, personal access token or external scheduler is required in Actions.
 [`.github/release.json`](../.github/release.json) controls the exact current
 asset paths, tag prefix, prerelease flag and README notes heading. Templates
 select only the package version being released, never all historical artifacts
-with a broad glob. Its bootstrap identifies the original existing 0.4.1 commit;
+with a broad glob. Its bootstrap identifies the original published 0.5.1 commit;
 new versions use their own artifact commit.
+
+The [XOCE repository migration](REPOSITORY-MIGRATION.md) changes the publication
+destination to `xefensor/pebble-lib-core`. It retains the package name, source
+commit and published asset bytes.
 
 ## Reruns and failures
 

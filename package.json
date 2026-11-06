@@ -7,7 +7,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xefensor/pebble-watchface-core.git"
+    "url": "https://github.com/xefensor/pebble-lib-core.git"
   },
   "files": [
     "dist.zip",

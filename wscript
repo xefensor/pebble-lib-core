@@ -12,8 +12,6 @@ out = 'build'
 
 
 def distclean(ctx):
-    if os.path.exists('dist.zip'):
-        os.remove('dist.zip')
     if os.path.exists('dist'):
         shutil.rmtree('dist')
     waflib.Scripting.distclean(ctx)
@@ -25,10 +23,13 @@ def options(ctx):
 
 def configure(ctx):
     ctx.load('pebble_sdk_lib')
+    ctx.env.BUNDLE_NAME = 'build/candidate/dist.zip'
 
 
 def build(ctx):
     ctx.load('pebble_sdk_lib')
+    ctx.env.BUNDLE_NAME = 'build/candidate/dist.zip'
+    ctx.path.make_node('build/candidate').mkdir()
 
     cached_env = ctx.env
     for platform in ctx.env.TARGET_PLATFORMS:
@@ -44,5 +45,5 @@ def build(ctx):
                    bin_type='lib')
 
     if ctx.cmd == 'clean':
-        for n in ctx.path.ant_glob(['dist/**/*', 'dist.zip'], quiet=True):
+        for n in ctx.path.ant_glob(['dist/**/*'], quiet=True):
             n.delete()

@@ -1,5 +1,10 @@
 # Pebble Watchface Core
 
+Main contains the current implementation. [Development](CONTRIBUTING.md),
+[current maintenance contracts](docs/MAINTENANCE.md) and [release policy](docs/RELEASING.md)
+are the active contributor references. Public downloads and frozen evidence keep
+their original versions; a merge to main is not publication.
+
 Repository: [pebble-lib-core](https://github.com/xefensor/pebble-lib-core), part of
 XOCE — Xef's Open Computing Ecosystem. The package remains
 `pebble-watchface-core`; see the [repository migration notes](docs/REPOSITORY-MIGRATION.md).
@@ -204,33 +209,11 @@ for exact signatures. Halftone and Dynamic are complete consumer examples.
 
 ## Build and test
 
-Use a Pebble C SDK with the Emery target, Node.js for the portable JavaScript
-suites and a C99 compiler for the native suites. Run these commands from a
-checkout of this repository; consumers install the built package instead.
-
-```sh
-npm ci --ignore-scripts
-npm test
-python3 -m unittest discover -s tests -p test_github_release.py
-pebble build
-python3 scripts/package-release.py
-```
-
-`pebble build` creates the package's `dist.zip`, containing native code, exported
-headers and phone JavaScript. `npm pack` wraps the release package as a versioned
-`.tgz`; it does not publish to npm. The release script normalizes SDK ZIP
-metadata, writes that tarball to `releases/` and records repository-path SHA-256
-checksums. The GitHub release workflow produces a separate flat checksum
-attachment for downloaded files.
-
-`npm test` runs JavaScript and portable C suites; `npm run test:native` runs only
-the C suites. These checks need neither the Pebble SDK nor an emulator. The
-release automation tests use a temporary repository and fake GitHub service;
-they do not publish anything. The 0.4.1 engine passed **126 JavaScript tests and
-three native C suites**. The later release-automation pass added **18 passing
-release tests**. These counts describe those checks, not physical-device or
-live-provider coverage. Rendering, permissions and real-device results belong
-to each consuming watchface's validation record.
+Use [CONTRIBUTING](CONTRIBUTING.md) for the current SDK/development workflow.
+`npm test` runs portable JS/C and workflow guards; `npm run build` writes
+`build/candidate/dist.zip` without replacing the frozen root SDK.
+`npm run pack:candidate` creates an isolated development npm package.
+Release packaging is a separate [explicit milestone](docs/RELEASING.md).
 
 ## Releasing Core and updating consumers
 

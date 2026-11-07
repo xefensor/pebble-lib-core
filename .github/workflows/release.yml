@@ -1,17 +1,6 @@
-name: GitHub release
+name: Publish reviewed release (manual)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - package.json
-      - dist/**
-      - dist.zip
-      - releases/**
-      - .github/release.json
-      - .github/workflows/release.yml
-      - scripts/github-release.py
-      - tests/test_github_release.py
   workflow_dispatch:
 
 permissions:

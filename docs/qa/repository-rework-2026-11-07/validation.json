@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-07",
+  "scope": "Repository maintenance; preserve features, accepted UI, public API, dependency pins and frozen releases.",
+  "portableChecks": "PASS",
+  "checksRun": [
+    "npm test",
+    "npm run check:docs",
+    "npm run build",
+    "npm run test:workflow",
+    "npm run pack:candidate",
+    "python3 -m unittest discover -s tests -p 'test_*release.py'"
+  ],
+  "preservation": {
+    "baseline": "783c419b4e57c4fc2d033c8b89e0636f9361e2c4",
+    "protectedFilesChecked": 24,
+    "result": "PASS",
+    "packageMetadataUnchangedExceptScripts": true
+  },
+  "sdkBuild": "PASS",
+  "nativeEvidence": [],
+  "evidencePolicy": "New development PBWs, captures and package tarballs are disposable under build/. These reports record this run; original versioned evidence and artifacts were not overwritten.",
+  "browserVerification": "No fresh browser execution in this maintenance pass. Existing browser evidence remains historical.",
+  "physicalDeviceVerification": false,
+  "pushed": false,
+  "published": false
+}

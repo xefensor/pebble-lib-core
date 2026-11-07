@@ -26,9 +26,15 @@
     "complications"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.js && python3 scripts/test-native.py",
+    "test": "node --test tests/*.test.js && python3 scripts/test-native.py && npm run test:workflow && npm run check:docs",
     "test:js": "node --test tests/*.test.js",
-    "test:native": "python3 scripts/test-native.py"
+    "test:native": "python3 scripts/test-native.py",
+    "test:source": "node --test tests/*.test.js && python3 scripts/test-native.py",
+    "test:workflow": "python3 -m unittest discover -s tests -p test_development_workflow.py",
+    "build": "python3 scripts/build.py",
+    "pack:candidate": "python3 scripts/package-candidate.py",
+    "release:package": "python3 scripts/package-release.py",
+    "check:docs": "python3 scripts/check-docs.py"
   },
   "dependencies": {},
   "pebble": {

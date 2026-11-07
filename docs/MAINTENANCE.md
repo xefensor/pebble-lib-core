@@ -15,15 +15,9 @@ Keep the readings-only and status-only adapters alongside the legacy context API
 
 src/js owns host-injected subscriptions, normalization, bounded caches and the shared queue; src/c and include own portable packets/state/cache. Root entry modules preserve public imports.
 
-## Phone persistence and evidence
+## Host lifecycle and evidence
 
-For apps with phone settings, keep active-writer selection, separate Android
-DOM/native storage views, exact application acknowledgements and bounded handoffs.
-Saving stays open where supported; uncertain writes retain the draft and explicit
-readback/retry. Discard cannot undo a write already sent. Load errors must not
-silently replace saved choices with editable defaults. Do not introduce unsolicited
-focus or scroll changes. Historical browser/emulator results do not validate a
-new build. Keep portable, packaged, simulated transport and real-device claims distinct.
+Hosts inject transport, settings, clocks, timers and storage. Restoring a cache keeps original observation and validity; polling never creates fresh evidence. Core owns no settings page, app controller, alarm or SDK subscription. Verify JS/native packet compatibility and bounded state with the portable fixtures. Keep source checks, packaged consumer execution, emulator observations and physical-device evidence distinct.
 
 ## Dependencies, identities and licences
 

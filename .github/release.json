@@ -12,9 +12,5 @@
   "notes": {
     "path": "README.md",
     "heading": "## Version {version}"
-  },
-  "bootstrap": {
-    "version": "0.5.1",
-    "source_commit": "a3e344651df22333f24bf52e7af9a10c2a1810cd"
   }
 }

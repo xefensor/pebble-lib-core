@@ -3,7 +3,7 @@
 from pathlib import Path
 import re,sys
 root=Path(__file__).resolve().parents[1]
-names=['AGENTS.md','CONTRIBUTING.md','README.md','docs/MAINTENANCE.md','docs/RELEASING.md','docs/UI.md']
+names=['AGENTS.md','CONTRIBUTING.md','README.md','docs/MAINTENANCE.md','docs/RELEASING.md','docs/UI.md','docs/USAGE.md','docs/history/index.md']
 errors=[];checked=0
 for name in names:
  path=root/name

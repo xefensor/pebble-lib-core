@@ -1,53 +1,42 @@
 # Developing Pebble Watchface Core
 
-## Setup and normal work
-
-Use Node 22+, Python3 and the Pebble SDK 4.33.1 on PATH for SDK builds.
-Portable tests do not need an SDK, a phone or a watch.
+Use Node 22, Python 3.12 and a C99 compiler (`cc`, or set `CC`). Portable tests do not need a
+phone, watch or Pebble SDK. For native SDK builds install [Pebble SDK
+4.33.1](https://developer.repebble.com/sdk/) and make `pebble` available on PATH. This
+repository builds independently from its own committed dependencies.
 
 ```sh
 npm ci --ignore-scripts
 npm test
 npm run build
+npm run pack:candidate
 ```
 
-Development outputs live under `build/candidate/`; QA output defaults to `build/qa/`. Frozen files under `dist/`, `releases/` and library root `dist.zip` are release snapshots.
+`npm test` runs source/native, workflow, release-fixture and documentation checks. CI uses Node
+22 and Python 3.12; it does not claim SDK, emulator or physical-device coverage.
 
-| Task | What to read/check |
-| --- | --- |
-| Everyday source change | Run relevant source/native tests; use npm test for the complete portable suite. |
-| Implementation boundaries | Read docs/MAINTENANCE.md for the affected ownership, compatibility or privacy boundary. |
-| Wire/API change | Read the linked public specifications and add/update cross-language fixtures; consumers stay independently pinned. |
-| Release/publication | Read docs/RELEASING.md. Release preparation is explicit; it is not part of every edit. |
+`src/js`, `src/c` and `include` own readings, packet/state/cache logic and host-injected
+transport. Root entry modules preserve public imports. Consumers retain their own release pins.
 
-## What counts as done
+## Outputs and evidence
 
-Make the requested coherent change, run relevant required checks, and report the
-result and material gaps. Broaden verification for an actual failure or unresolved
-risk; do not automatically repeat every historical QA suite. SDK/native changes
-need a current packaged build; visual work needs actual inspection. Do not claim
-fresh browser/device evidence from source checks or an old report.
+Active source lives in the directories above. Generated SDK and npm packages live in ignored
+`build/candidate/`. Disposable QA belongs in `build/qa/`. Candidate checks reject changed source
+or altered build outputs. Frozen `dist/`, `releases/` and root `dist.zip` belong to their
+original release tags. Existing `docs/qa/` records and images are historical evidence; do not
+overwrite or relabel them.
 
-## Output and commit policy
+Read [maintenance contracts](docs/MAINTENANCE.md) before changing ownership, privacy or
+compatibility. For visual changes, inspect the consuming app in the emulator; portable tests
+establish no visual/device claim. Report source tests, packaged audits, emulator runs and
+real-device tests separately.
 
-Ordinary work does not bump a version, produce source/debug release archives or
-publish anything. A candidate contains the installable runtime and notices and
-can be inspected independently of frozen artifacts. Candidate fingerprints reject
-stale source or modified bundles. Finish a coherent authorized change in a local
-commit when appropriate; do not push, tag, upload or deploy without explicit scope.
+## Release commands
 
-## Library candidates
+`npm run release:prepare` validates committed frozen inputs and writes `build/release/`. It
+never builds or publishes. `npm run release:publish` is restricted to the manually dispatched
+GitHub release workflow on main. See [RELEASING](docs/RELEASING.md) for freezing a new version
+and safe reruns. Finish authorized work in reviewable local commits; pushing or publication
+needs explicit scope.
 
-`npm run build` produces build/candidate/dist.zip without changing the frozen
-root dist.zip. `npm run pack:candidate` creates a temporary npm package with the
-current SDK and sources. It does not repin, rebuild or publish consuming apps.
-
-## Repository map
-
-src/js owns host-injected subscriptions, normalization, bounded caches and the shared queue; src/c and include own portable packets/state/cache. Root entry modules preserve public imports.
-
-[Current maintenance contracts](docs/MAINTENANCE.md) · [Release boundary](docs/RELEASING.md) ·
-[Historical maintainer notes](docs/history/maintainer-notes-before-rework.md)
-
-[Repository maintenance validation](docs/qa/repository-rework-2026-11-07/validation.json)
-records the preserved baseline and this pass’s checks.
+[History index](docs/history/index.md).

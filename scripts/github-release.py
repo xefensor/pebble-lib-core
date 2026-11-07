@@ -150,7 +150,7 @@ def validate_artifacts(root, config, commit, package, assets):
             if path.startswith("src/js/"):
                 require(sdk.get("js/" + path[7:]) == content, "Core SDK JavaScript differs: " + path)
             elif path.startswith("include/") and path.endswith(".h"):
-                require(sdk.get("include/pebble-watchface-core/" + path[8:]) == content,
+                require(sdk.get("include/" + package["name"] + "/" + path[8:]) == content,
                         "Core SDK exported header differs: " + path)
         return
     source_config = config["source_archive"]
@@ -194,6 +194,64 @@ def validate_artifacts(root, config, commit, package, assets):
                     "Store archive embeds a different or additional PBW")
 
 
+def validate_dependencies(root, commit, package):
+    """Check every local dependency against its lock and provenance record."""
+    import base64
+    requests = {name: value for name, value in package.get('dependencies', {}).items()
+                if value.startswith('file:')}
+    if not requests:
+        return
+    lock = json.loads(committed(root, commit, 'package-lock.json'))
+    names = git(root, 'ls-tree', '-r', '--name-only', '-z', commit).decode().split('\0')
+    pins = [json.loads(committed(root, commit, name)) for name in names
+            if name.startswith('vendor/') and name.endswith('.json')]
+    for name, request in requests.items():
+        path = safe_path(request[5:])
+        require(path.startswith('vendor/'), 'Dependencies must be self-contained vendor archives')
+        content = committed(root, commit, path)
+        record = lock['packages']['node_modules/' + name]
+        integrity = 'sha512-' + base64.b64encode(hashlib.sha512(content).digest()).decode()
+        require(record['resolved'] == request and record['integrity'] == integrity,
+                'Dependency lock differs: ' + name)
+        with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as archive:
+            metadata = json.load(archive.extractfile('package/package.json'))
+        require(metadata['name'] == name and metadata['version'] == record['version'],
+                'Dependency package identity differs: ' + name)
+        matching = [pin for pin in pins if pin.get('package') == name]
+        require(len(matching) == 1, 'Missing or ambiguous dependency provenance: ' + name)
+        pin = matching[0]
+        require(pin.get('archive', pin.get('artifact')) == PurePosixPath(path).name and
+                pin['sha256'] == digest(content) and pin['version'] == metadata['version'] and
+                pin.get('integrity', integrity) == integrity,
+                'Dependency provenance differs: ' + name)
+
+
+def require_manual_workflow():
+    repository = os.getenv('GITHUB_REPOSITORY', '')
+    require(os.getenv('GITHUB_ACTIONS') == 'true' and
+            os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch' and
+            os.getenv('GITHUB_REF') == 'refs/heads/main' and
+            os.getenv('GITHUB_WORKFLOW_REF') == repository +
+                '/.github/workflows/release.yml@refs/heads/main',
+            'Publication requires the manually dispatched release.yml workflow on main')
+
+
+def validate_prepared(root, config_path, folder):
+    """Recompute provenance before publication; a manifest is not trusted input."""
+    manifest = json.loads((folder / 'release-manifest.json').read_text())
+    require(manifest['trigger_commit'] == git(root, 'rev-parse', 'HEAD').decode().strip(),
+            'Prepared release belongs to another checkout commit')
+    with tempfile.TemporaryDirectory(prefix='pebble-release-audit-') as scratch:
+        expected_folder = Path(scratch)
+        expected = prepare(root, config_path, expected_folder, manifest['trigger_commit'])
+        require(manifest == expected, 'Prepared manifest differs from committed release inputs')
+        require({path.name for path in folder.iterdir()} ==
+                {path.name for path in expected_folder.iterdir()}, 'Prepared inventory differs')
+        for path in expected_folder.iterdir():
+            require((folder / path.name).read_bytes() == path.read_bytes(),
+                    'Prepared asset changed: ' + path.name)
+
+
 def prepare(root, config_path, output, trigger_commit=None):
     config = json.loads(config_path.read_text())
     require(config["kind"] in ("watchface", "core", "chmu"), "Unsupported release kind")
@@ -205,11 +263,15 @@ def prepare(root, config_path, output, trigger_commit=None):
     identity = release_id(package)
     require(config["prerelease"] or not re.search(r"-(?:rc|beta)\.", identity),
             "Release candidates and betas must be marked prerelease")
+    tag = config.get("tag_prefix", "v") + identity
+    tagged = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify",
+                             "refs/tags/" + tag + "^{commit}"], capture_output=True)
     bootstrap = config.get("bootstrap", {})
-    commit = bootstrap.get("source_commit") if bootstrap.get("version") == identity else trigger
+    commit = (tagged.stdout.decode().strip() if tagged.returncode == 0 else
+              bootstrap.get("source_commit") if bootstrap.get("version") == identity else trigger)
     require(isinstance(commit, str) and SHA.fullmatch(commit), "Invalid source commit")
     require(subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", commit, trigger],
-                           capture_output=True).returncode == 0, "Source commit is not an ancestor")
+                           capture_output=True).returncode == 0, "Release tag/source commit is not an ancestor")
     original_package = json.loads(committed(root, commit, "package.json"))
     require(release_id(original_package) == identity, "Bootstrap package version differs")
     paths = [expand(path, package) for path in config["assets"]]
@@ -217,7 +279,7 @@ def prepare(root, config_path, output, trigger_commit=None):
             len({PurePosixPath(path).name for path in paths}) == len(paths), "Duplicate release assets")
     require(all(re.fullmatch(r"[A-Za-z0-9_.-]+", PurePosixPath(path).name) for path in paths),
             "Unsafe asset basename")
-    checksums_path = safe_path(config["checksums_file"])
+    checksums_path = expand(config["checksums_file"], package)
     expected = checksum_map(committed(root, commit, checksums_path), paths, checksums_path)
     current = checksum_map(committed(root, trigger, checksums_path), paths, checksums_path)
     assets = {}
@@ -227,6 +289,7 @@ def prepare(root, config_path, output, trigger_commit=None):
                 "An existing version's asset changed; restore it or bump the version: " + path)
         require(digest(content) == expected[path] == current[path], "Artifact checksum differs: " + path)
         assets[path] = content
+    validate_dependencies(root, commit, original_package)
     validate_artifacts(root, config, commit, original_package, assets)
     tag = config.get("tag_prefix", "v") + identity
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", tag), "Unsafe release tag")
@@ -238,6 +301,11 @@ def prepare(root, config_path, output, trigger_commit=None):
         require(match, "Release notes heading is missing")
         notes = match.group(1).strip()
     require(notes, "Release notes are empty")
+    if output.exists():
+        allowed = {PurePosixPath(path).name for path in paths} | {
+            "SHA256SUMS.txt", "release-notes.md", "release-manifest.json"}
+        require(all(path.is_file() and path.name in allowed for path in output.iterdir()),
+                "Unexpected file in release output; use an empty output directory")
     output.mkdir(parents=True, exist_ok=True)
     records = []
     for path, content in assets.items():
@@ -335,6 +403,9 @@ class GitHub:
 
 
 def publish(root, folder, github=None):
+    if github is None:
+        require_manual_workflow()
+        validate_prepared(root, root / ".github/release.json", folder)
     manifest = json.loads((folder / "release-manifest.json").read_text())
     require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", manifest["repository"]), "Invalid repository")
     require(not os.getenv("GITHUB_REPOSITORY") or os.environ["GITHUB_REPOSITORY"] == manifest["repository"],
@@ -355,7 +426,7 @@ def publish(root, folder, github=None):
     release = github.release(manifest["tag"])
     tag_commit = github.tag_commit(manifest["tag"])
     if release and not release["draft"]:
-        require(tag_commit, "Published release has no tag")
+        require(tag_commit == manifest["source_commit"], "Published tag points elsewhere; tags are never moved")
         require(release["prerelease"] == manifest["prerelease"], "Published release prerelease flag differs")
         package = json.loads(committed(root, tag_commit, "package.json"))
         require(release_id(package) == manifest["release_id"], "Published tag has another package version")
@@ -394,7 +465,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "publish"))
     parser.add_argument("--config", type=Path, default=ROOT / ".github/release.json")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=ROOT / "build/release")
     parser.add_argument("--commit", help="Full triggering commit SHA; defaults to HEAD")
     args = parser.parse_args()
     if args.command == "prepare":
@@ -404,6 +475,9 @@ def main():
                 handle.write("release_id=" + manifest["release_id"] + "\n")
         print("Prepared " + manifest["tag"] + " from " + manifest["source_commit"])
     else:
+        require(args.config.resolve() == (ROOT / ".github/release.json").resolve(),
+                "Publication must use the repository release configuration")
+        require_manual_workflow()
         print("GitHub release: " + publish(ROOT, args.output))
 
 

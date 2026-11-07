@@ -97,7 +97,7 @@ class ReleaseTests(unittest.TestCase):
                  "src/js/index.js": b"module.exports = {};\n", "src/c/core.c": b"int fixture(void){return 1;}\n",
                  "include/core.h": b"int fixture(void);\n"}
         sdk = zip_bytes({"js/index.js": files["src/js/index.js"],
-                         "include/pebble-watchface-core/core.h": files["include/core.h"]})
+                         "include/fixture-core/core.h": files["include/core.h"]})
         files["dist.zip"] = sdk
         files["releases/fixture-1.2.3.tgz"] = tar_bytes(files)
         files["releases/SHA256SUMS.txt"] = (release.digest(sdk) + "  dist.zip\n" +
@@ -132,6 +132,103 @@ class ReleaseTests(unittest.TestCase):
 
     def prepared(self):
         return release.prepare(self.root, self.config_path, self.out)
+
+    def test_tagged_release_survives_later_package_scripts_and_docs(self):
+        self.run_git("tag", "v1.2.3", self.original)
+        self.config.pop("bootstrap", None)
+        self.config_path.write_text(json.dumps(self.config))
+        metadata = dict(self.package, scripts={"test": "new maintenance check"})
+        self.write("package.json", json.dumps(metadata).encode())
+        self.write("README.md", b"Current contributor documentation\n")
+        self.commit()
+        manifest = self.prepared()
+        self.assertEqual(manifest["source_commit"], self.original)
+        release.validate_prepared(self.root, self.config_path, self.out)
+
+    def test_tag_on_unrelated_history_is_rejected(self):
+        self.run_git("branch", "original", self.original)
+        self.run_git("checkout", "--orphan", "other")
+        self.write("README.md", b"Unrelated source\n")
+        unrelated = self.commit()
+        self.run_git("tag", "v1.2.3", unrelated)
+        self.run_git("checkout", "original")
+        with self.assertRaisesRegex(ValueError, "not an ancestor"):
+            self.prepared()
+        self.assertFalse(self.out.exists())
+
+    def test_manifest_tampering_is_rejected_before_publication(self):
+        self.prepared()
+        path = self.out / "release-manifest.json"
+        metadata = json.loads(path.read_text())
+        metadata["repository"] = "owner/another"
+        path.write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(ValueError, "manifest differs"):
+            release.validate_prepared(self.root, self.config_path, self.out)
+
+    def test_prepared_notes_and_extra_assets_are_rejected(self):
+        self.prepared()
+        (self.out / "release-notes.md").write_text("altered notes")
+        with self.assertRaisesRegex(ValueError, "Prepared asset changed"):
+            release.validate_prepared(self.root, self.config_path, self.out)
+        self.prepared()
+        (self.out / "unexpected.pbw").write_bytes(b"stale output")
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            release.validate_prepared(self.root, self.config_path, self.out)
+        with self.assertRaisesRegex(ValueError, "Unexpected file"):
+            self.prepared()
+
+    def test_publication_context_requires_manual_main_workflow(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "manually dispatched"):
+                release.require_manual_workflow()
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "owner/fixture",
+            "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_WORKFLOW_REF": "owner/fixture/.github/workflows/release.yml@refs/heads/main"}
+        with patch.dict(os.environ, environment, clear=True):
+            release.require_manual_workflow()
+            for key, value in [("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF", "refs/heads/topic"),
+                               ("GITHUB_WORKFLOW_REF", "owner/fixture/.github/workflows/check.yml@refs/heads/main")]:
+                with patch.dict(os.environ, {key: value}):
+                    with self.assertRaisesRegex(ValueError, "manually dispatched"):
+                        release.require_manual_workflow()
+
+
+    def test_published_tag_cannot_move_even_with_identical_asset_bytes(self):
+        self.prepared()
+        github = FakeGitHub()
+        release.publish(self.root, self.out, github)
+        self.write("README.md", b"Later documentation\n")
+        github.tag = self.commit()
+        before = github.writes[:]
+        with self.assertRaisesRegex(ValueError, "tags are never moved"):
+            release.publish(self.root, self.out, github)
+        self.assertEqual(github.writes, before)
+
+    def test_all_local_dependencies_require_matching_lock_and_provenance(self):
+        import base64
+        raw = tar_bytes({"package.json": json.dumps({"name": "fixture-dependency", "version": "0.1.0"}).encode()})
+        self.write("vendor/dependency.tgz", raw)
+        request = "file:vendor/dependency.tgz"
+        integrity = "sha512-" + base64.b64encode(__import__("hashlib").sha512(raw).digest()).decode()
+        metadata = dict(self.package, dependencies={"fixture-dependency": request})
+        lock = {"packages": {"node_modules/fixture-dependency": {
+            "resolved": request, "integrity": integrity, "version": "0.1.0"}}}
+        pin = {"package": "fixture-dependency", "archive": "dependency.tgz",
+               "version": "0.1.0", "sha256": release.digest(raw), "integrity": integrity}
+        self.write("vendor/DEPENDENCY.json", json.dumps(pin).encode())
+        self.write("package-lock.json", json.dumps(lock).encode())
+        commit = self.commit()
+        release.validate_dependencies(self.root, commit, metadata)
+        lock["packages"]["node_modules/fixture-dependency"]["integrity"] = "sha512-tampered"
+        self.write("package-lock.json", json.dumps(lock).encode())
+        with self.assertRaisesRegex(ValueError, "Dependency lock differs"):
+            release.validate_dependencies(self.root, self.commit(), metadata)
+        lock["packages"]["node_modules/fixture-dependency"]["integrity"] = integrity
+        self.write("package-lock.json", json.dumps(lock).encode())
+        pin["sha256"] = "0" * 64
+        self.write("vendor/DEPENDENCY.json", json.dumps(pin).encode())
+        with self.assertRaisesRegex(ValueError, "Dependency provenance differs"):
+            release.validate_dependencies(self.root, self.commit(), metadata)
 
     def test_bootstrap_uses_tested_commit_and_flat_download_checksums(self):
         self.write("README.md", b"Unreleased documentation update\n")
@@ -185,7 +282,7 @@ class ReleaseTests(unittest.TestCase):
         with tarfile.open(self.root / "releases/fixture-1.2.3.tgz") as archive:
             files = {member.name[8:]: archive.extractfile(member).read() for member in archive.getmembers()}
         files["dist.zip"] = zip_bytes({"js/index.js": files["src/js/index.js"],
-            "include/pebble-watchface-core/core.h": b"stale exported header"})
+            "include/fixture-core/core.h": b"stale exported header"})
         assets = {"dist.zip": files["dist.zip"], "releases/fixture-1.2.3.tgz": tar_bytes(files)}
         with self.assertRaisesRegex(ValueError, "Core SDK exported header differs"):
             release.validate_artifacts(self.root, self.config, self.original, self.package, assets)

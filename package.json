@@ -1,7 +1,7 @@
 {
   "name": "pebble-watchface-core",
   "author": "Xef",
-  "version": "0.5.1",
+  "version": "0.5.2-dev.0",
   "description": "Shared Pebble reading data, host transport and legacy context compatibility.",
   "main": "src/js/index.js",
   "license": "SEE LICENSE IN LICENSE",

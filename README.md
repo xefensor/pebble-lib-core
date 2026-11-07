@@ -20,6 +20,12 @@ The package is compiled into each watchface's PBW. Users install a watchface;
 there is no separate core app or background service to install. A core update
 reaches users when a consuming watchface is rebuilt and released.
 
+The `feat/dynamic-complications` branch uses **0.5.2-dev.0**, an unpublished
+development candidate. It adds an optional public reading-label hook without
+changing the native library or v1–v4 wire formats. Candidate builds/packages stay
+under `build/candidate/`; the 0.5.1 downloads and frozen root `dist.zip` remain
+unchanged. See the [label-hook contract](docs/HOST-CONTRACT.md#optional-public-reading-labels).
+
 ## Download and release status
 
 [Core 0.5.1 on GitHub Releases](https://github.com/xefensor/pebble-lib-core/releases/tag/v0.5.1)

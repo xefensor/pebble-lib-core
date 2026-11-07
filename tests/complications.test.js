@@ -55,6 +55,7 @@ function fixture(overrides={}) {
   };
   if(overrides.queue) options.send=createQueue({send:options.send,keys:options.keys,later:options.later,cancelLater:options.cancelLater});
   if(overrides.cacheKey!==undefined) options.cacheKey=overrides.cacheKey;
+  if(overrides.labelForReading!==undefined) options.labelForReading=overrides.labelForReading;
   if(overrides.unavailable) delete pebble.subscribeToSource;
   function latest(category,item) {
     const sub=subscriptions.filter(value=>!value.closed&&value.request.category===category&&value.request.item===item).at(-1);
@@ -711,4 +712,85 @@ test('Legacy cache signatures also scrub private custom labels before preference
   assert.ok(!JSON.stringify([...values.values()]).includes('Private person'));
   const signature=JSON.parse(values.get('watchface-core-complications-v1')).signature;
   assert.equal(JSON.parse(signature.slice(4))[0].category,'music');
+});
+
+test('Optional public context labels receive source instances and isolated public descriptors',()=>{
+  const calls=[];
+  const f=fixture({labelForReading(slot,instance,selected){
+    calls.push({slot:{...slot},id:instance.instanceId,selected});
+    slot.property='mutated';selected[0].index=99;
+    assert.equal(selected[1],null,'unrelated private descriptor is not exposed');
+    return instance.properties.name.shortText.text;
+  }});
+  f.client.refresh();
+  const privateChoice=preference(1,'music','track',0,'title');
+  privateChoice.properties.label={shortText:{text:'Private label'}};
+  f.prefs([preference(0,'weather','location',0,'temperature'),privateChoice]);
+  assert.deepEqual(f.latest('weather','location').properties,['temperature','name','observed_at','is_forecast']);
+  assert.deepEqual(f.latest('music','track').properties,['title']);
+  f.source({validUntilMs:NOW+90000,instances:[{instanceId:'prague',properties:{
+    name:{shortText:{text:'Praha'}},temperature:{shortText:{text:'5,3°F'},numericValue:{value:5.25,unit:'°F'}},
+    observed_at:{timestamp:{value:NOW/1000-60}}}}]},'weather','location');
+  const value=f.packet()[0];
+  assert.equal(calls.length,1);assert.equal(calls[0].slot.property,'temperature');assert.equal(calls[0].id,'prague');
+  assert.equal(value.semantic.label,'Praha');assert.equal(value.text,'5,3°F');assert.equal(value.semantic.value,5.25);
+  assert.equal(value.semantic.observedAt,NOW/1000-60);assert.equal(value.validUntil,NOW/1000+90);
+  assert.equal(f.client.status().slots[0].property,'temperature');assert.equal(f.client.status().slots[0].index,0);
+  f.source({instances:[{properties:{title:{shortText:{text:'Private track'}}}}]},'music','track');
+  assert.equal(calls.length,1);
+  assert.ok(!JSON.stringify([...f.values.values()]).includes('Private track'));
+  assert.ok(!JSON.stringify([...f.values.values()]).includes('Private label'));
+});
+
+test('Public context labels stay UTF-8 bounded and preserve the original cache lease',()=>{
+  let calls=0;
+  const labelForReading=()=>{calls++;return 'Příliš žluťoučká veřejná lokace';};
+  const f=fixture({labelForReading});f.client.refresh();
+  const choice=preference(0,'weather','location',0,'temperature');f.prefs([choice]);
+  f.source({validUntilMs:NOW+60000,instances:[{properties:{temperature:{shortText:{text:'7°C'}}}}]},'weather','location');
+  const original=f.packet()[0];assert.ok(original.semantic.label.endsWith('…'));
+  assert.ok(Buffer.byteLength(original.semantic.label,'utf8')<=24);
+  f.advance(10000);f.client.configure();assert.equal(calls,1);assert.equal(f.packet()[0].validUntil,original.validUntil);
+  const restored=fixture({values:f.values,labelForReading});restored.advance(20000);restored.client.refresh();restored.prefs([choice]);
+  assert.equal(calls,1,'cache restore must not relabel or acquire a fresh receipt');
+  assert.equal(restored.packet()[0].semantic.label,original.semantic.label);
+  assert.equal(restored.packet()[0].confirmedAt,original.confirmedAt);
+  assert.equal(restored.packet()[0].validUntil,original.validUntil);
+  restored.tick(40000);const expired=restored.packet()[0];
+  assert.equal(expired.status,7);assert.equal(expired.semantic.label,original.semantic.label);
+  assert.equal(expired.text,'');assert.equal(expired.semantic.value,undefined);assert.equal(expired.semantic.observedAt,0);
+});
+
+test('Optional label failures and empty/non-string output preserve normal reading identity',()=>{
+  for(const output of [undefined,null,{},42,'',' \n ']) {
+    const f=fixture({labelForReading:()=>output});f.client.refresh();f.prefs([preference(0)]);
+    f.source(envelope({shortText:{text:'72%'}}));assert.equal(f.packet()[0].semantic.label,'value');assert.equal(f.packet()[0].text,'72%');
+  }
+  const f=fixture({labelForReading:()=>{throw new Error('Host presentation failure');}});
+  f.client.refresh();f.prefs([preference(0)]);f.source(envelope({shortText:{text:'72%'}}));
+  assert.equal(f.packet()[0].status,2);assert.equal(f.packet()[0].semantic.label,'value');assert.deepEqual(f.logs,[]);
+});
+
+test('A public source name can explain an unavailable property without retaining its old value',()=>{
+  const f=fixture({labelForReading:(slot,instance)=>instance.properties.name.shortText.text});f.client.refresh();
+  f.prefs([preference(0,'weather','location',0,'temperature')]);
+  f.source({instances:[{properties:{name:{shortText:{text:'Praha'}}}}]},'weather','location');
+  assert.equal(f.packet()[0].status,3);assert.equal(f.packet()[0].semantic.label,'Praha');
+  assert.equal(f.packet()[0].text,'');assert.equal(f.packet()[0].semantic.observedAt,0);
+  f.sourceError('PERMISSION_DENIED','weather','location');
+  assert.equal(f.packet()[0].status,4);assert.equal(f.packet()[0].semantic.label,'Praha');
+});
+
+test('Public label hooks never request or receive private music/notification source names',()=>{
+  for(const category of ['music','notifications']) {
+    let called=0;const f=fixture({labelForReading:()=>{called++;return 'Must never appear';}});
+    f.client.refresh();f.prefs([preference(0,category,'item',0,'value')]);
+    assert.deepEqual(f.latest(category,'item').properties,['value']);
+    f.source(envelope({shortText:{text:'Private content'}}),category,'item');
+    assert.equal(called,0);assert.equal(f.packet()[0].text,'Private content');
+    f.source({instances:[{properties:{name:{shortText:{text:'Private source name'}}}}]},category,'item');
+    assert.equal(called,0);assert.equal(f.packet()[0].semantic.label,'');
+    assert.ok(!JSON.stringify([...f.values.values()]).includes('Private source name'));
+    assert.ok(!JSON.stringify([...f.values.values()]).includes('Must never appear'));
+  }
 });

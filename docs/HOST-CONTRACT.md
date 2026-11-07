@@ -1,9 +1,10 @@
-# Host contract — 0.5.1
+# Host contract — 0.5.2-dev.0 local candidate
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
 
-This contract describes 0.5.1, including the legacy 0.4.1 context interface. See the [project README](../README.md)
+This contract describes the unpublished 0.5.2-dev.0 candidate, additive to 0.5.1
+and including the legacy 0.4.1 context interface. See the [project README](../README.md)
 for package downloads, [release guide](GITHUB-RELEASES.md) for publishing, and
 [maintainer notes](../AGENTS.md) for validation and change boundaries. A new
 Core release does not change an installed or pinned consumer automatically.
@@ -90,6 +91,33 @@ The host owns `ready`, `appmessage`, configuration and close events. It starts
 or refreshes coordinators, routes context session requests, and sends only
 validated presentation settings to native code. Source access and notification
 permissions remain explicit phone-app behavior.
+
+### Optional public reading labels
+
+`createComplications` accepts `labelForReading(slot, instance, descriptors)`.
+The optional host callback may return a nonempty **public identity label**, such
+as a weather location needed to distinguish two readings. The normal property
+label remains when the callback is absent, throws, or returns an empty/non-string
+value. Core normalizes the result to the existing 24-byte UTF-8 semantic label;
+the wire format, value, units, observation and original expiry are unchanged.
+
+`slot` is a copy of the selected `{category,item,property,index,label?}` descriptor.
+`instance` is the actual delivered source instance, including its `instanceId`
+and `properties`; treat it as read-only. `descriptors` contains copies of the two
+selected public descriptors, with private music/notification positions replaced
+by `null`. The callback must not invent a source name, interpret an index as a
+name, or return private content as identity.
+
+When the callback is supplied, Core requests `name` alongside the selected and
+observation properties for public sources. A missing `name` need not prevent the
+callback using another verified public identity or returning no override. The
+phone treats requested properties as hints and drops names the source does not
+declare, as documented in the [plugin source API](https://developer.repebble.com/guides/plugins/preview/#three-ways-to-use-plugins).
+The callback can also identify a delivered public instance whose chosen property is
+unavailable. Public context is retained with that reading's failure identity and
+bounded cache under the original lease. Cache restore does not invoke the callback
+or renew the receipt. Private music/notification sources never request this extra
+property or invoke the callback, and their content/identity clearing is unchanged.
 
 ## Native side
 

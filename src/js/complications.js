@@ -154,7 +154,7 @@ function publicIdentity(slot,semantic) {
   if (!slot || slot.invalid || privateDescriptor(slot) || privateRecord({semantic:semantic})) { return null; }
   var value=semantic || semanticOf(slot,null,{});
   var result={kind:value.kind,source:value.source,detail:value.detail || 0,
-    qualifiers:value.qualifiers || 0,label:labelOf(slot)};
+    qualifiers:value.qualifiers || 0,label:wire.normalizeText(value.label || labelOf(slot),24)};
   if (typeof value.unit === 'string') { result.unit=value.unit; }
   return result;
 }
@@ -242,6 +242,22 @@ module.exports = function(options) {
   var deliveryGeneration = 0;
 
   function now() { return Math.floor(options.now() / 1000); }
+  function labelReading(slot,instance,semantic) {
+    if(typeof options.labelForReading !== 'function' || !object(instance) ||
+        privateDescriptor(slot) || privateRecord({semantic:semantic}))return;
+    // The hook receives public configuration copies, not coordinator state or
+    // unrelated private descriptor labels. It supplies identity, never values.
+    var selected=descriptors.map(function(value) {
+      return value && !privateDescriptor(value) ? Object.assign({},value) : null;
+    });
+    try {
+      var label=options.labelForReading(Object.assign({},slot),instance,selected);
+      if(typeof label === 'string') {
+        label=wire.normalizeText(label,24);
+        if(label)semantic.label=label;
+      }
+    } catch (ignored) {} // Optional presentation context cannot break data.
+  }
   function valid(record) {
     return record && Number.isInteger(record.confirmedAt) && record.confirmedAt > 0 && record.confirmedAt <= now() &&
       Number.isInteger(record.validUntil) && now() < record.validUntil && record.validUntil <= MAX_EPOCH &&
@@ -420,6 +436,8 @@ module.exports = function(options) {
       var group = groups[key];
       group.slots.push(i);
       if (group.properties.indexOf(slot.property) < 0) { group.properties.push(slot.property); }
+      if (typeof options.labelForReading === 'function' && !privateDescriptor(slot) &&
+          group.properties.indexOf('name') < 0) { group.properties.push('name'); }
       observationProperties(slot).forEach(function(name) {
         if (group.properties.indexOf(name)<0) { group.properties.push(name); }
       });
@@ -461,7 +479,12 @@ module.exports = function(options) {
                     parsed.value.observedAt=null;
                   }
                   if (parsed.value.observedAt !== null) { parsed.value.semantic.observedAt=parsed.value.observedAt; }
+                  labelReading(slot,instance,parsed.value.semantic);
                   identities[i]=publicIdentity(slot,parsed.value.semantic);
+                } else if (typeof options.labelForReading === 'function') {
+                  var identity=semanticOf(slot,null,{});
+                  labelReading(slot,instance,identity);
+                  identities[i]=publicIdentity(slot,identity);
                 }
                 states[i] = parsed.status; errors[i] = parsed.error || '';
                 fromCache[i]=false;

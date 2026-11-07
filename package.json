@@ -37,7 +37,8 @@
     "check:docs": "python3 scripts/check-docs.py",
     "release:prepare": "python3 scripts/github-release.py prepare",
     "release:publish": "python3 scripts/github-release.py publish",
-    "test:release": "python3 -m unittest discover -s tests -p \"test_*release*.py\""
+    "test:release": "python3 -m unittest discover -s tests -p \"test_*release*.py\"",
+    "check:setup": "python3 scripts/check-setup.py"
   },
   "dependencies": {},
   "pebble": {

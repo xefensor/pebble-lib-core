@@ -1,5 +1,23 @@
 # Developing Pebble Watchface Core
 
+## Select the development environment
+
+This checkout selects **Node 22.23.4** in `.node-version` and **Python 3.12.15** in
+`.python-version`; CI reads those same files. A Node version manager that reads
+`.node-version` can select it automatically. With fnm and uv already installed:
+
+```sh
+fnm use --install-if-missing
+uv venv --python "$(cat .python-version)" .venv
+. .venv/bin/activate
+npm run check:setup
+```
+
+The setup check reports missing or mismatched runtimes and installs nothing.
+The virtual environment stays in ignored `.venv/`. Install locked dependencies
+with `npm ci --ignore-scripts` after selecting the runtimes.
+
+
 Use Node 22, Python 3.12 and a C99 compiler (`cc`, or set `CC`). Portable tests do not need a
 phone, watch or Pebble SDK. For native SDK builds install [Pebble SDK
 4.33.1](https://developer.repebble.com/sdk/) and make `pebble` available on PATH. This

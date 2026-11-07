@@ -1,4 +1,5 @@
 """Release provenance and immutability tests; no network or SDK is used."""
+
 import importlib.util
 import io
 import json
@@ -12,7 +13,9 @@ from unittest.mock import patch
 import zipfile
 
 
-SPEC = importlib.util.spec_from_file_location("github_release", Path(__file__).resolve().parents[1] / "scripts/github-release.py")
+SPEC = importlib.util.spec_from_file_location(
+    "github_release", Path(__file__).resolve().parents[1] / "scripts/github-release.py"
+)
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
@@ -55,13 +58,24 @@ class FakeGitHub:
 
     def create_release(self, manifest, notes):
         self.writes.append(("draft", manifest["tag"]))
-        self.item = {"id": 1, "tag_name": manifest["tag"], "draft": True, "prerelease": manifest["prerelease"]}
+        self.item = {
+            "id": 1,
+            "tag_name": manifest["tag"],
+            "draft": True,
+            "prerelease": manifest["prerelease"],
+        }
         return self.item
 
     def assets(self, item):
-        return [{"id": index, "name": name, "size": len(content),
-                 "digest": "sha256:" + release.digest(content)}
-                for index, (name, content) in enumerate(self.files.items())]
+        return [
+            {
+                "id": index,
+                "name": name,
+                "size": len(content),
+                "digest": "sha256:" + release.digest(content),
+            }
+            for index, (name, content) in enumerate(self.files.items())
+        ]
 
     def verify_asset(self, item, asset, expected):
         release.GitHub.verify_asset(self, item, asset, expected)
@@ -92,33 +106,56 @@ class ReleaseTests(unittest.TestCase):
         self.run_git("init", "-b", "main")
         self.run_git("config", "user.name", "Release Test")
         self.run_git("config", "user.email", "release-test@example.invalid")
-        self.package = {"name": "fixture-core", "version": "1.2.3"}
-        files = {"package.json": json.dumps(self.package).encode(), "LICENSE": b"fixture license",
-                 "src/js/index.js": b"module.exports = {};\n", "src/c/core.c": b"int fixture(void){return 1;}\n",
-                 "include/core.h": b"int fixture(void);\n"}
-        sdk = zip_bytes({"js/index.js": files["src/js/index.js"],
-                         "include/fixture-core/core.h": files["include/core.h"]})
+        self.package = {"name": "fixture-library", "version": "1.2.3"}
+        files = {
+            "package.json": json.dumps(self.package).encode(),
+            "LICENSE": b"fixture license",
+            "src/js/index.js": b"module.exports = {};\n",
+            "src/c/core.c": b"int fixture(void){return 1;}\n",
+            "include/core.h": b"int fixture(void);\n",
+        }
+        sdk = zip_bytes(
+            {
+                "js/index.js": files["src/js/index.js"],
+                "include/fixture-library/core.h": files["include/core.h"],
+            }
+        )
         files["dist.zip"] = sdk
         files["releases/fixture-1.2.3.tgz"] = tar_bytes(files)
-        files["releases/SHA256SUMS.txt"] = (release.digest(sdk) + "  dist.zip\n" +
-            release.digest(files["releases/fixture-1.2.3.tgz"]) + "  releases/fixture-1.2.3.tgz\n").encode()
-        files["README.md"] = b"# Fixture\n\n## Version 1.2.3\n\nCorrect release notes.\n\n## Older\nNo.\n"
+        files["releases/SHA256SUMS.txt"] = (
+            release.digest(sdk)
+            + "  dist.zip\n"
+            + release.digest(files["releases/fixture-1.2.3.tgz"])
+            + "  releases/fixture-1.2.3.tgz\n"
+        ).encode()
+        files["README.md"] = (
+            b"# Fixture\n\n## Version 1.2.3\n\nCorrect release notes.\n\n## Older\nNo.\n"
+        )
         for name, content in files.items():
             self.write(name, content)
         self.original = self.commit()
-        self.config = {"repository": "owner/fixture", "kind": "core", "display_name": "Fixture",
-            "tag_prefix": "v", "prerelease": False,
+        self.config = {
+            "repository": "owner/fixture",
+            "kind": "core",
+            "display_name": "Fixture",
+            "tag_prefix": "v",
+            "prerelease": False,
             "assets": ["dist.zip", "releases/fixture-{version}.tgz"],
             "checksums_file": "releases/SHA256SUMS.txt",
             "notes": {"path": "README.md", "heading": "## Version {version}"},
-            "bootstrap": {"version": "1.2.3", "source_commit": self.original}}
+            "bootstrap": {"version": "1.2.3", "source_commit": self.original},
+        }
         self.config_path.write_text(json.dumps(self.config))
 
     def tearDown(self):
         self.temp.cleanup()
 
     def run_git(self, *args):
-        return subprocess.check_output(["git", "-C", str(self.root), *args], stderr=subprocess.DEVNULL).decode().strip()
+        return (
+            subprocess.check_output(["git", "-C", str(self.root), *args], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
 
     def write(self, name, content):
         path = self.root / name
@@ -181,17 +218,26 @@ class ReleaseTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "manually dispatched"):
                 release.require_manual_workflow()
-        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "owner/fixture",
-            "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
-            "GITHUB_WORKFLOW_REF": "owner/fixture/.github/workflows/release.yml@refs/heads/main"}
+        environment = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "owner/fixture",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_WORKFLOW_REF": "owner/fixture/.github/workflows/release.yml@refs/heads/main",
+        }
         with patch.dict(os.environ, environment, clear=True):
             release.require_manual_workflow()
-            for key, value in [("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF", "refs/heads/topic"),
-                               ("GITHUB_WORKFLOW_REF", "owner/fixture/.github/workflows/check.yml@refs/heads/main")]:
+            for key, value in [
+                ("GITHUB_EVENT_NAME", "push"),
+                ("GITHUB_REF", "refs/heads/topic"),
+                (
+                    "GITHUB_WORKFLOW_REF",
+                    "owner/fixture/.github/workflows/check.yml@refs/heads/main",
+                ),
+            ]:
                 with patch.dict(os.environ, {key: value}):
                     with self.assertRaisesRegex(ValueError, "manually dispatched"):
                         release.require_manual_workflow()
-
 
     def test_published_tag_cannot_move_even_with_identical_asset_bytes(self):
         self.prepared()
@@ -206,15 +252,36 @@ class ReleaseTests(unittest.TestCase):
 
     def test_all_local_dependencies_require_matching_lock_and_provenance(self):
         import base64
-        raw = tar_bytes({"package.json": json.dumps({"name": "fixture-dependency", "version": "0.1.0"}).encode()})
+
+        raw = tar_bytes(
+            {
+                "package.json": json.dumps(
+                    {"name": "fixture-dependency", "version": "0.1.0"}
+                ).encode()
+            }
+        )
         self.write("vendor/dependency.tgz", raw)
         request = "file:vendor/dependency.tgz"
-        integrity = "sha512-" + base64.b64encode(__import__("hashlib").sha512(raw).digest()).decode()
+        integrity = (
+            "sha512-" + base64.b64encode(__import__("hashlib").sha512(raw).digest()).decode()
+        )
         metadata = dict(self.package, dependencies={"fixture-dependency": request})
-        lock = {"packages": {"node_modules/fixture-dependency": {
-            "resolved": request, "integrity": integrity, "version": "0.1.0"}}}
-        pin = {"package": "fixture-dependency", "archive": "dependency.tgz",
-               "version": "0.1.0", "sha256": release.digest(raw), "integrity": integrity}
+        lock = {
+            "packages": {
+                "node_modules/fixture-dependency": {
+                    "resolved": request,
+                    "integrity": integrity,
+                    "version": "0.1.0",
+                }
+            }
+        }
+        pin = {
+            "package": "fixture-dependency",
+            "archive": "dependency.tgz",
+            "version": "0.1.0",
+            "sha256": release.digest(raw),
+            "integrity": integrity,
+        }
         self.write("vendor/DEPENDENCY.json", json.dumps(pin).encode())
         self.write("package-lock.json", json.dumps(lock).encode())
         commit = self.commit()
@@ -247,51 +314,43 @@ class ReleaseTests(unittest.TestCase):
             self.prepared()
         self.assertFalse(self.out.exists())
 
-    def test_future_release_rejects_stale_source_inside_core_tar(self):
+    def test_package_rejects_stale_source(self):
         self.config.pop("bootstrap")
         self.config_path.write_text(json.dumps(self.config))
         self.write("src/js/index.js", b"new source missing from frozen tar\n")
         self.commit()
-        with self.assertRaisesRegex(ValueError, "Stale Core tar input"):
+        with self.assertRaisesRegex(ValueError, "Stale package input"):
             self.prepared()
 
-    def test_source_archive_excludes_working_directories_and_compiled_pbws(self):
-        names = self.run_git("ls-tree", "-r", "--name-only", self.original).splitlines()
-        sources = {name: release.committed(self.root, self.original, name)
-                   for name in names if release.critical(name)}
-        for forbidden in ["build/personal/CHMU-personal.pbw", "node_modules/example/index.js",
-                          ".git/config", ".pebble/cache.json", "CHMU-personal.pbw",
-                          "fixtures/Personal.PBW"]:
-            with self.subTest(member=forbidden):
-                archive = zip_bytes({"release-root/" + name: data
-                    for name, data in {**sources, forbidden: b"must not be published"}.items()})
-                with self.assertRaisesRegex(ValueError, "Source archive contains"):
-                    release.validate_source(self.root, self.original, archive, "release-root/")
-
-    def test_source_archive_allows_committed_personal_build_recipe_source(self):
-        recipe = b"// Source recipe for the optional personal build; not a compiled PBW.\n"
-        self.write("src/personal-build.js", recipe)
-        commit = self.commit()
-        names = self.run_git("ls-tree", "-r", "--name-only", commit).splitlines()
-        sources = {name: release.committed(self.root, commit, name)
-                   for name in names if release.critical(name)}
-        validated = release.validate_source(self.root, commit, zip_bytes(sources))
-        self.assertEqual(validated["src/personal-build.js"], recipe)
-
-    def test_core_sdk_header_cannot_be_stale_inside_an_otherwise_current_tar(self):
+    def test_package_rejects_stale_exported_header(self):
         with tarfile.open(self.root / "releases/fixture-1.2.3.tgz") as archive:
-            files = {member.name[8:]: archive.extractfile(member).read() for member in archive.getmembers()}
-        files["dist.zip"] = zip_bytes({"js/index.js": files["src/js/index.js"],
-            "include/fixture-core/core.h": b"stale exported header"})
+            files = {
+                member.name[8:]: archive.extractfile(member).read()
+                for member in archive.getmembers()
+            }
+        files["dist.zip"] = zip_bytes(
+            {
+                "js/index.js": files["src/js/index.js"],
+                "include/fixture-library/core.h": b"stale exported header",
+            }
+        )
         assets = {"dist.zip": files["dist.zip"], "releases/fixture-1.2.3.tgz": tar_bytes(files)}
-        with self.assertRaisesRegex(ValueError, "Core SDK exported header differs"):
+        with self.assertRaisesRegex(ValueError, "SDK exported header differs"):
             release.validate_artifacts(self.root, self.config, self.original, self.package, assets)
 
     def test_rc_and_beta_ids_are_distinct_and_validated(self):
-        self.assertEqual(release.release_id({"version": "1.9.0", "halftoneReleaseCandidate": 6}), "1.9.0-rc.6")
-        self.assertEqual(release.release_id({"version": "1.9.0", "halftoneBeta": 2}), "1.9.0-beta.2")
-        for package in [{"version": "1.2.3", "releaseCandidate": True}, {"version": "1.2.3", "halftoneBeta": 0},
-                        {"version": "1.2.3;echo bad"}, {"version": "256.0.0"}]:
+        self.assertEqual(
+            release.release_id({"version": "1.9.0", "halftoneReleaseCandidate": 6}), "1.9.0-rc.6"
+        )
+        self.assertEqual(
+            release.release_id({"version": "1.9.0", "halftoneBeta": 2}), "1.9.0-beta.2"
+        )
+        for package in [
+            {"version": "1.2.3", "releaseCandidate": True},
+            {"version": "1.2.3", "halftoneBeta": 0},
+            {"version": "1.2.3;echo bad"},
+            {"version": "256.0.0"},
+        ]:
             with self.assertRaises(ValueError):
                 release.release_id(package)
 
@@ -305,14 +364,20 @@ class ReleaseTests(unittest.TestCase):
         self.prepared()
         github = FakeGitHub()
         self.assertEqual(release.publish(self.root, self.out, github), "published")
-        self.assertEqual([kind for kind, _ in github.writes], ["tag", "draft", "upload", "upload", "upload", "publish"])
+        self.assertEqual(
+            [kind for kind, _ in github.writes],
+            ["tag", "draft", "upload", "upload", "upload", "publish"],
+        )
         before = github.writes[:]
         self.assertEqual(release.publish(self.root, self.out, github), "unchanged")
         self.assertEqual(github.writes, before)
 
     def test_published_missing_or_different_assets_are_not_repaired_or_clobbered(self):
         self.prepared()
-        for mutation in (lambda g: g.files.pop("dist.zip"), lambda g: g.files.update({"dist.zip": b"wrong"})):
+        for mutation in (
+            lambda g: g.files.pop("dist.zip"),
+            lambda g: g.files.update({"dist.zip": b"wrong"}),
+        ):
             github = FakeGitHub()
             release.publish(self.root, self.out, github)
             mutation(github)
@@ -382,30 +447,19 @@ class ReleaseTests(unittest.TestCase):
 
     def test_only_http404_is_treated_as_missing(self):
         github = release.GitHub("owner/fixture")
-        with patch.object(release.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Not Found (HTTP 404)")):
+        with patch.object(
+            release.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Not Found (HTTP 404)"),
+        ):
             self.assertIsNone(github.release("v1.2.3"))
-        with patch.object(release.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Forbidden (HTTP 403)")):
+        with patch.object(
+            release.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Forbidden (HTTP 403)"),
+        ):
             with self.assertRaisesRegex(ValueError, "request failed"):
                 github.release("v1.2.3")
-
-    def test_chmu_public_guard_rejects_personal_bundle_even_with_public_uuid(self):
-        package = {"version": "1.0.1", "pebble": {"uuid": "public-id"}}
-        config = {"kind": "chmu", "app_uuid": "public-id", "source_archive": {"path": "source.zip", "prefix": ""}}
-        self.write("package.json", json.dumps(package).encode())
-        self.write("src/config.html", b'<body data-build-variant="__CHMU_BUILD_VARIANT__"></body>')
-        for path in [self.root / "src/js/index.js", self.root / "src/c/core.c", self.root / "include/core.h"]:
-            path.unlink()
-        commit = self.commit()
-        sources = {path: release.committed(self.root, commit, path) for path in ["package.json", "LICENSE", "src/config.html"]}
-        pbw = {"appinfo.json": json.dumps({"versionLabel": "1.0.1", "uuid": "public-id", "plugin": {"script": "plugin.js"}}).encode(),
-               "plugin.js": b"// CHMU_BUILD_VARIANT=public\nvar okay=true;", "config.html": sources["src/config.html"].replace(b"__CHMU_BUILD_VARIANT__", b"public")}
-        assets = {"source.zip": zip_bytes(sources), "public.pbw": zip_bytes(pbw)}
-        release.validate_artifacts(self.root, config, commit, package, assets)
-        for script in [b"// CHMU_BUILD_VARIANT=personal\n", b"// CHMU_BUILD_VARIANT=public\nchmu.rails.cz"]:
-            pbw["plugin.js"] = script
-            assets["public.pbw"] = zip_bytes(pbw)
-            with self.assertRaises(ValueError):
-                release.validate_artifacts(self.root, config, commit, package, assets)
 
 
 if __name__ == "__main__":

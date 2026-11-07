@@ -1,0 +1,61 @@
+{
+  "name": "Bug report",
+  "description": "Report a reproducible problem in Core.",
+  "body": [
+    {
+      "type": "input",
+      "id": "version",
+      "attributes": {
+        "label": "Package version and public entrypoint",
+        "description": "Use the exact version or commit you tested."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "environment",
+      "attributes": {
+        "label": "Consuming app and development environment",
+        "description": "Include Node/Python versions and, for native problems, SDK version and watch target. State whether the package is vendored or a development candidate."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "reproduction",
+      "attributes": {
+        "label": "Steps to reproduce",
+        "description": "Give the smallest sequence that reproduces the problem."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "result",
+      "attributes": {
+        "label": "Expected and actual behavior",
+        "description": "Describe what you expected and what happened."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "evidence",
+      "attributes": {
+        "label": "Logs or screenshots",
+        "description": "Optional. Remove private notification text, media details, tokens and other personal information before sharing."
+      },
+      "validations": {
+        "required": false
+      }
+    }
+  ]
+}

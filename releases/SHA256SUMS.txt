@@ -1,2 +1,2 @@
-d96b80833392585895cc98370a7b04d06a7e5d8b994c7e0cfb01a76b354c9701  dist.zip
-16801ad73359896e192fc8a0adb63c2f053f5aae4892e50cf63a133f54cd836e  releases/pebble-watchface-core-0.5.1.tgz
+2c5ee1b03b3d3c7c47f029e9f069f3672617aa50cd8fbda0f1a7668befe91980  dist.zip
+0d01d6daa50bed274f613c0bc4c476ab841e4a48b5d90b6b7b246867d7ca4d82  releases/pebble-watchface-core-0.5.2.tgz

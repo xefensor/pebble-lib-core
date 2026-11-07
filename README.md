@@ -10,47 +10,35 @@ XOCE — Xef's Open Computing Ecosystem. The package remains
 `pebble-watchface-core`; see the [repository migration notes](docs/REPOSITORY-MIGRATION.md).
 
 Shared data and lifecycle code for [Halftone](https://github.com/xefensor/halftone-watchface)
-and [Dynamic](https://github.com/xefensor/pebble-watchface-dynamic). Version **0.5.1**
-adds a lightweight status-only context adapter alongside the readings-only
-integration introduced in 0.5.0. It preserves the legacy context API and v1–v4
-reading packets. The release assets below are version-pinned to **0.5.1**; earlier
-artifacts remain frozen.
+and [Dynamic](https://github.com/xefensor/pebble-watchface-dynamic). Version **0.5.2**
+adds optional public reading labels while preserving the native library and
+v1–v4 wire formats. See the [label-hook contract](docs/HOST-CONTRACT.md#optional-public-reading-labels).
 
 The package is compiled into each watchface's PBW. Users install a watchface;
-there is no separate core app or background service to install. A core update
-reaches users when a consuming watchface is rebuilt and released.
-
-The `feat/dynamic-complications` branch uses **0.5.2-dev.0**, an unpublished
-development candidate. It adds an optional public reading-label hook without
-changing the native library or v1–v4 wire formats. Candidate builds/packages stay
-under `build/candidate/`; the 0.5.1 downloads and frozen root `dist.zip` remain
-unchanged. See the [label-hook contract](docs/HOST-CONTRACT.md#optional-public-reading-labels).
+there is no separate Core app or service to install. Consumer versions advance
+independently; Dynamic 0.18.3 bundles Core 0.5.2.
 
 ## Download and release status
 
-[Core 0.5.1 on GitHub Releases](https://github.com/xefensor/pebble-lib-core/releases/tag/v0.5.1)
-provides these versioned assets:
+[Core 0.5.2 on GitHub Releases](https://github.com/xefensor/pebble-lib-core/releases/tag/v0.5.2)
+provides the following assets:
 
 | Download | Use |
 | --- | --- |
-| [pebble-watchface-core-0.5.1.tgz](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/pebble-watchface-core-0.5.1.tgz) | Version-pinned package for consuming watchfaces; includes the SDK archive, sources and license |
-| [dist.zip](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
-| [SHA256SUMS.txt](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.1/SHA256SUMS.txt) | Flat checksums for both downloaded files |
+| [pebble-watchface-core-0.5.2.tgz](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.2/pebble-watchface-core-0.5.2.tgz) | Version-pinned package containing SDK, sources and license |
+| [dist.zip](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.2/dist.zip) | Built Pebble SDK library and exported headers/JavaScript |
+| [SHA256SUMS.txt](https://github.com/xefensor/pebble-lib-core/releases/download/v0.5.2/SHA256SUMS.txt) | Checksums for both downloads |
 
-Download both packages and the checksum file into one directory, then run
-`sha256sum -c SHA256SUMS.txt`. The release tag identifies the
-[frozen 0.5.1 source](https://github.com/xefensor/pebble-lib-core/tree/v0.5.1).
-Later documentation and automation updates on `main` do not replace those files.
+Download the assets together and run `sha256sum -c SHA256SUMS.txt`.
+The release tag identifies the matching source. Earlier release assets and tags
+retain their original bytes. See [the release guide](docs/GITHUB-RELEASES.md).
 
-GitHub Actions publishes future packaged versions after their tests and artifact
-checks pass. It uploads the committed files rather than rebuilding them with a
-different SDK. See [the release guide](docs/GITHUB-RELEASES.md) for the packaging,
-trigger and rerun rules, and [AGENTS.md](AGENTS.md) for maintainer instructions.
+## Version 0.5.2
 
-Publishing Core does **not** update installed watchfaces or their dependencies.
-Dynamic 0.16.0 pins 0.5.1; Halftone retains its independent pin. Each consumer is upgraded,
-built, visually checked and released independently. Core is not a separate
-watch app, a background service or an appstore submission.
+- Add an optional host callback for meaningful public reading labels, including source names and weather qualifiers.
+- Keep media and notification identity transient; private sources do not enter public labels.
+- Preserve native exports, bounded readings, storage compatibility and v1–v4 wire formats.
+- Validate JavaScript/native fixtures and a fresh SDK/package build. Consuming apps still require independent validation; no physical-device run is claimed.
 
 ## Shared responsibilities
 

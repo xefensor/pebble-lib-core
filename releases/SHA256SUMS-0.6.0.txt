@@ -1,0 +1,2 @@
+b5b8205fb900d2f4e7f6cba94c6fdf3f721aefd8591e1f084ce54cb3236f50b6  pebble-watchface-core-0.6.0-sdk.zip
+bfa89e7d8691afcc5b11b504d2587d5aa0d26b4e02097fd3252e003cb3931f0c  pebble-watchface-core-0.6.0.tgz

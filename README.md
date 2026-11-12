@@ -45,7 +45,7 @@ The development SDK targets are **Emery / Time 2, Flint / Pebble 2 Duo and Gabbr
 
 ## Development
 
-Use Node 22, Python 3.12 and a C compiler. SDK builds additionally need Pebble SDK 4.33.1 on
+Use Node 22, Python 3.12 and a C compiler. SDK builds additionally need Pebble SDK 4.44 on
 PATH.
 
 ```sh

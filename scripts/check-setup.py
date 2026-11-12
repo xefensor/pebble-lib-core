@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", action="store_true", help="Also require Pebble SDK 4.33.1")
+    parser.add_argument("--sdk", action="store_true", help="Also require Pebble SDK 4.44")
     args = parser.parse_args()
     package = json.loads((ROOT / "package.json").read_text())
     errors = []
@@ -38,8 +38,8 @@ def main():
             installed = subprocess.check_output(
                 ["pebble", "sdk", "list"], text=True, stderr=subprocess.STDOUT
             )
-            if "4.33.1" not in installed:
-                errors.append("Install and select Pebble SDK 4.33.1")
+            if "4.44" not in installed:
+                errors.append("Install and select Pebble SDK 4.44")
         except (OSError, subprocess.CalledProcessError):
             errors.append("Pebble CLI is unavailable; follow CONTRIBUTING.md for SDK setup")
     if errors:
@@ -47,7 +47,7 @@ def main():
         return 1
     print(
         f"Setup PASS: Node {expected_node}, Python {expected_python}"
-        + (", Pebble SDK 4.33.1 installed" if args.sdk else "")
+        + (", Pebble SDK 4.44 installed" if args.sdk else "")
     )
     return 0
 

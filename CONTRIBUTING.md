@@ -20,7 +20,7 @@ with `npm ci --ignore-scripts` after selecting the runtimes.
 
 Use Node 22, Python 3.12 and a C99 compiler (`cc`, or set `CC`). Portable tests do not need a
 phone, watch or Pebble SDK. For native SDK builds install [Pebble SDK
-4.33.1](https://developer.repebble.com/sdk/) and make `pebble` available on PATH. This
+4.44](https://developer.repebble.com/sdk/) and make `pebble` available on PATH. This
 repository builds independently from its own committed dependencies.
 
 ```sh

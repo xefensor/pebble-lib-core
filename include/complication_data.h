@@ -192,9 +192,9 @@ static inline bool complications_text_valid(const uint8_t *text, size_t length) 
   return true;
 }
 
-static inline bool complications_records_read(const uint8_t *bytes,
-                                               size_t length,
-                                               ComplicationSet *result) {
+static inline bool complications_records_read_prefix(const uint8_t *bytes,
+                                               size_t length, ComplicationSlot *slots,
+                                               unsigned capacity) {
   size_t at = COMPLICATION_HEADER_BYTES;
   const bool extended = bytes[0] >= 3;
   const bool precise = bytes[0] == 4;
@@ -273,8 +273,8 @@ static inline bool complications_records_read(const uint8_t *bytes,
         !complications_text_valid(bytes + at, text_length) ||
         !complications_text_valid(bytes + at + text_length, unit_length) ||
         !complications_text_valid(bytes + at + text_length + unit_length, label_length)) { return false; }
-    if (result != NULL) {
-      ComplicationSlot *slot = &result->slots[index];
+    if (slots != NULL && index < capacity) {
+      ComplicationSlot *slot = &slots[index];
       slot->flags = flags;
       slot->status = status;
       slot->text_length = text_length;
@@ -302,22 +302,37 @@ static inline bool complications_records_read(const uint8_t *bytes,
   return at == length;
 }
 
+/* Validate every wire record even when a host paints only the first two.
+ * No malformed or private hidden record bypasses the normal protocol checks. */
+static inline bool complications_records_read(const uint8_t *bytes,size_t length,
+                                               ComplicationSet *result) {
+  return complications_records_read_prefix(bytes,length,result?result->slots:NULL,
+                                           COMPLICATION_SLOT_COUNT);
+}
+
 // Validate the complete snapshot before copying any slot. Two passes avoid a
 // roughly 2KB temporary ComplicationSet on the watch's small native stack.
 // Input bytes and output storage must not overlap.
-static inline bool complications_read(const uint8_t *bytes, size_t length,
-                                       ComplicationSet *result) {
+static inline bool complications_read_prefix(const uint8_t *bytes, size_t length,
+                                       ComplicationSlot *slots,unsigned capacity) {
   if (bytes == NULL || length < COMPLICATION_HEADER_BYTES +
       COMPLICATION_SLOT_COUNT * COMPLICATION_LEGACY_RECORD_HEADER_BYTES ||
       length > COMPLICATION_MAX_BYTES || (bytes[0] != 1 && bytes[0] != 2 && bytes[0] != 3 && bytes[0] != 4) || bytes[1] != 0 ||
       complications_u16(bytes + 2) != length ||
       complications_u16(bytes + 4) != complications_crc16(bytes, length) ||
       !complications_records_read(bytes, length, NULL)) { return false; }
-  if (result != NULL) {
-    memset(result, 0, sizeof(*result));
-    complications_records_read(bytes, length, result);
+  if (slots != NULL) {
+    if (capacity > COMPLICATION_SLOT_COUNT) return false;
+    memset(slots, 0, capacity*sizeof(*slots));
+    complications_records_read_prefix(bytes, length, slots, capacity);
   }
   return true;
+}
+
+static inline bool complications_read(const uint8_t *bytes,size_t length,
+                                      ComplicationSet *result) {
+  return complications_read_prefix(bytes,length,result?result->slots:NULL,
+                                    COMPLICATION_SLOT_COUNT);
 }
 
 static inline bool complication_is_selected(const ComplicationSlot *slot) {

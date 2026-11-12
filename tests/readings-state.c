@@ -34,13 +34,19 @@ static int write_bytes(void *context, uint32_t key, const void *input, size_t le
 static void remove_bytes(void *context, uint32_t key) {
   ((Store *)context)->lengths[index_of(key)]=-1;
 }
-static void changed(void *context) { ++((Store *)context)->changes; }
+#ifndef READING_TEST_REUSE_SCRATCH
+#define READING_TEST_REUSE_SCRATCH() ((void)0)
+#endif
+static void changed(void *context) { ++((Store *)context)->changes; READING_TEST_REUSE_SCRATCH(); }
 static size_t fixture(const char *name,uint8_t *bytes) {
   char path[100];snprintf(path,sizeof(path),"tests/fixtures/%s.bin",name);
   FILE *file=fopen(path,"rb");assert(file);
   const size_t size=fread(bytes,1,COMPLICATION_MAX_BYTES,file);
   assert(!ferror(file)&&feof(file)&&fclose(file)==0);return size;
 }
+#ifndef READING_TEST_PRIVATE_SLOTS
+#define READING_TEST_PRIVATE_SLOTS 4
+#endif
 int main(void) {
   Store store={0};
   for(unsigned i=0;i<WFC_CACHE_CHUNKS;i++)store.lengths[i]=-1;
@@ -76,12 +82,12 @@ int main(void) {
   assert(wfc_readings_receive(&lean,bytes,length,NOW));
   wfc_readings_init(&reopened,&config,false);
   assert(wfc_readings_load_cache(&reopened,NOW+1));
-  for(unsigned i=0;i<4;i++) {
+  for(unsigned i=0;i<READING_TEST_PRIVATE_SLOTS;i++) {
     assert(!reopened.complications.slots[i].flags);
     assert(!reopened.complications.slots[i].text[0]);
   }
   assert(wfc_readings_connection_changed(&lean,false));
-  for(unsigned i=0;i<4;i++)assert(!lean.complications.slots[i].flags);
+  for(unsigned i=0;i<READING_TEST_PRIVATE_SLOTS;i++)assert(!lean.complications.slots[i].flags);
   const unsigned changes=store.changes;
   assert(!wfc_readings_connection_changed(&lean,false)&&store.changes==changes);
 

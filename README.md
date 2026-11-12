@@ -62,8 +62,10 @@ Development outputs belong in ignored `build/`; published archives stay frozen.
 
 [PolyForm Noncommercial 1.0.0](LICENSE). Preserve bundled third-party notices and attribution.
 
-## Version 0.5.3
+## Version 0.6.0
 
-Builds the unchanged readings/cache/transport runtime for Emery, Flint and Gabbro with SDK 4.44. Public APIs, wire versions, observation ages and privacy bounds are unchanged.
+Builds the readings/cache/transport runtime for Emery, Flint and Gabbro with SDK 4.44. Existing APIs, wire versions, observation ages and privacy bounds are unchanged.
 
 This is local release preparation; published downloads above remain frozen.
+
+The additive `WfcReadingPair` API retains the two drawable readings on small-memory hosts. It validates every record of the original five-record v1–v4 packets and shares the existing cache, expiry and privacy rules. `WfcReadings` and `WatchfaceCore` remain source/binary compatible.

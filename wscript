@@ -34,6 +34,10 @@ def build(ctx):
     cached_env = ctx.env
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
+        # GCC 14 link-time optimization removes duplicate static helpers across
+        # the host and its libraries. Fat objects retain ordinary archive use.
+        ctx.env.append_unique('CFLAGS', ['-flto', '-ffat-lto-objects'])
+        ctx.env.append_unique('LINKFLAGS', ['-flto'])
         ctx.set_group(ctx.env.PLATFORM_NAME)
         lib_name = '{}/{}'.format(ctx.env.BUILD_DIR, ctx.env.PROJECT_INFO['name'])
         ctx.pbl_build(source=ctx.path.ant_glob('src/c/**/*.c'), target=lib_name, bin_type='lib')

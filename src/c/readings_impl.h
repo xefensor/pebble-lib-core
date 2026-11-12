@@ -2,12 +2,19 @@
  * Included once per translation unit with a concrete type and function prefix.
  * There are no layout casts, SDK callbacks or context allocations here. */
 
+#ifndef WFC_READINGS_SLOTS
+#define WFC_READINGS_SLOTS COMPLICATION_SLOT_COUNT
+#endif
+#ifndef WFC_READINGS_DECODE
+#define WFC_READINGS_DECODE complications_read
+#endif
+
 static void changed(WFC_READINGS_TYPE *state) {
   if (state->config.on_changed != NULL) { state->config.on_changed(state->config.context); }
 }
 
 static void record_freshness(WFC_READINGS_TYPE *state, time_t now) {
-  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+  for (unsigned i = 0; i < WFC_READINGS_SLOTS; ++i) {
     state->was_fresh[i] = state->has_complications &&
         complication_is_fresh(&state->complications.slots[i], now);
   }
@@ -112,7 +119,7 @@ bool WFC_READINGS_FN(load_cache)(WFC_READINGS_TYPE *state, time_t now) {
     state->has_complications = false; state->complication_packet_length = 0;
     memset(&state->complications, 0, sizeof(state->complications));
     memset(state->was_fresh, 0, sizeof(state->was_fresh));
-    memset(state->complication_packet, 0, sizeof(state->complication_packet));
+    memset(state->complication_packet, 0, WFC_CACHE_BYTES);
     WFC_READINGS_FN(clear_cache)(state);
     return false;
   }
@@ -130,21 +137,24 @@ bool WFC_READINGS_FN(load_cache)(WFC_READINGS_TYPE *state, time_t now) {
         storage->read(storage->context, first_key + i,
                       state->complication_packet + offset, chunk) != (int)chunk) { return false; }
   }
-  if (!complications_read(state->complication_packet, length, &state->complications)) { return false; }
+  if (!WFC_READINGS_DECODE(state->complication_packet, length, &state->complications)) { return false; }
+  size_t cache_at=COMPLICATION_HEADER_BYTES;
   for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
-    if (state->complications.slots[i].source_kind == COMPLICATION_SOURCE_MUSIC ||
-        state->complications.slots[i].source_kind == COMPLICATION_SOURCE_NOTIFICATION) {
+    const uint8_t *record=state->complication_packet+cache_at;
+    cache_at+=complications_record_header_bytes(state->complication_packet[0])+record[2]+record[22]+record[23]+
+        ((record[0]&COMPLICATION_FLAG_BITMAP)?COMPLICATION_PALETTE_BYTES+complications_u16(record+14):0);
+    if (record[24] == COMPLICATION_SOURCE_MUSIC || record[24] == COMPLICATION_SOURCE_NOTIFICATION) {
       state->has_complications = false; state->complication_packet_length = 0;
       memset(state->was_fresh, 0, sizeof(state->was_fresh));
       memset(&state->complications, 0, sizeof(state->complications));
-      memset(state->complication_packet, 0, sizeof(state->complication_packet));
+      memset(state->complication_packet, 0, WFC_CACHE_BYTES);
       WFC_READINGS_FN(clear_cache)(state);
       return false;
     }
   }
   state->has_complications = true;
   state->complication_packet_length = length;
-  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i)
+  for (unsigned i = 0; i < WFC_READINGS_SLOTS; ++i)
     state->complications.slots[i].cached = state->complications.slots[i].status == COMPLICATION_STATUS_READY;
   record_freshness(state, now);
   changed(state);
@@ -153,10 +163,10 @@ bool WFC_READINGS_FN(load_cache)(WFC_READINGS_TYPE *state, time_t now) {
 
 bool WFC_READINGS_RECEIVE(WFC_READINGS_TYPE *state, const uint8_t *bytes,
                                size_t length, time_t now) {
-  if (length <= COMPLICATION_MAX_BYTES && complications_read(bytes, length, &state->complications)) {
+  if (length <= COMPLICATION_MAX_BYTES && WFC_READINGS_DECODE(bytes, length, &state->complications)) {
     state->has_complications = true;
     state->complication_packet_length = cache_packet(bytes, length, state->complication_packet,
-                                                    sizeof(state->complication_packet));
+                                                    WFC_CACHE_BYTES);
     record_freshness(state, now);
     if (state->complication_packet_length) save_cache(state);
     else WFC_READINGS_FN(clear_cache)(state);
@@ -174,7 +184,7 @@ bool WFC_READINGS_RECEIVE(WFC_READINGS_TYPE *state, const uint8_t *bytes,
 
 bool WFC_READINGS_FN(tick)(WFC_READINGS_TYPE *state, time_t now) {
   bool expired = false;
-  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+  for (unsigned i = 0; i < WFC_READINGS_SLOTS; ++i) {
     const bool fresh = state->has_complications && complication_is_fresh(&state->complications.slots[i], now);
     if (state->was_fresh[i] && !fresh && state->complications.slots[i].status == COMPLICATION_STATUS_READY) {
       expired = true;
@@ -186,7 +196,7 @@ bool WFC_READINGS_FN(tick)(WFC_READINGS_TYPE *state, time_t now) {
 }
 
 static void clear_private_readings(WFC_READINGS_TYPE *state) {
-  for (unsigned i = 0; i < COMPLICATION_SLOT_COUNT; ++i) {
+  for (unsigned i = 0; i < WFC_READINGS_SLOTS; ++i) {
     ComplicationSlot *slot = &state->complications.slots[i];
     if (complication_is_selected(slot) &&
         (slot->source_kind == COMPLICATION_SOURCE_GENERIC ||

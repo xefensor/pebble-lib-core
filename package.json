@@ -46,7 +46,6 @@
     "sdkVersion": "3",
     "targetPlatforms": [
       "emery",
-      "flint",
       "gabbro"
     ],
     "resources": {

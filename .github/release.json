@@ -5,12 +5,13 @@
   "tag_prefix": "v",
   "prerelease": false,
   "assets": [
-    "dist.zip",
+    "releases/pebble-watchface-core-{version}-sdk.zip",
     "releases/pebble-watchface-core-{version}.tgz"
   ],
-  "checksums_file": "releases/SHA256SUMS.txt",
+  "checksums_file": "releases/SHA256SUMS-{version}.txt",
   "notes": {
     "path": "README.md",
     "heading": "## Version {version}"
-  }
+  },
+  "sdk_archive": "releases/pebble-watchface-core-{version}-sdk.zip"
 }

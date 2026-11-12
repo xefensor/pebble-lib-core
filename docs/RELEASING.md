@@ -8,10 +8,13 @@ Routine checks are in [CONTRIBUTING](../CONTRIBUTING.md). Ordinary pushes run ch
 
 ```sh
 npm run build
+npm run pack:candidate
 npm run release:package
 ```
 
-Existing versions are refused. Never regenerate a historical archive after a documentation or
+New releases copy the exact checked candidate tarball and SDK to versioned files
+under `releases/`, with a versioned checksum file. The historical root `dist.zip`
+and earlier checksum files remain unchanged. Existing versions are refused. Never regenerate a historical archive after a documentation or
 tooling edit. Review checksums, source identity and vendored package provenance, then commit all
 frozen inputs and release notes. No tag is created by these commands.
 

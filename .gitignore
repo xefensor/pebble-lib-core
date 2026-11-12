@@ -9,3 +9,6 @@ dist/
 .waf*
 
 /.venv/
+
+# Isolated pinned SDK/CLI environment.
+/.build-tools/

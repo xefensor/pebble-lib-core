@@ -322,6 +322,15 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Stale package input"):
             self.prepared()
 
+    def test_versioned_sdk_asset_does_not_depend_on_historical_root_sdk(self):
+        sdk_path='releases/fixture-1.2.3-sdk.zip'
+        config=dict(self.config,sdk_archive=sdk_path)
+        assets={sdk_path:(self.root/'dist.zip').read_bytes(),
+                'releases/fixture-1.2.3.tgz':(self.root/'releases/fixture-1.2.3.tgz').read_bytes()}
+        (self.root/'dist.zip').write_bytes(b'historical SDK remains independent')
+        release.validate_artifacts(self.root,config,self.original,self.package,assets)
+        self.assertEqual((self.root/'dist.zip').read_bytes(),b'historical SDK remains independent')
+
     def test_package_rejects_stale_exported_header(self):
         with tarfile.open(self.root / "releases/fixture-1.2.3.tgz") as archive:
             files = {

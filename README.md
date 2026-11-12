@@ -64,7 +64,7 @@ Development outputs belong in ignored `build/`; published archives stay frozen.
 
 ## Version 0.6.0
 
-Builds the readings/cache/transport runtime for Emery, Flint and Gabbro with SDK 4.44. Existing APIs, wire versions, observation ages and privacy bounds are unchanged.
+Builds the readings/cache/transport runtime for Emery and Gabbro with SDK 4.44. Existing APIs, wire versions, observation ages and privacy bounds are unchanged.
 
 This is local release preparation; published downloads above remain frozen.
 

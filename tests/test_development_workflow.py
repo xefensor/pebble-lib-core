@@ -7,9 +7,11 @@ import tempfile
 import unittest
 import runpy
 import types
+import io,tarfile,zipfile,sys
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'scripts'))
 SPEC = importlib.util.spec_from_file_location('workflow', ROOT / 'scripts/repo_workflow.py')
 workflow = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(workflow)
@@ -107,6 +109,27 @@ class DevelopmentWorkflow(unittest.TestCase):
             packager.package(self.root)
         self.assertEqual(frozen.read_bytes(), b'frozen package')
         self.assertEqual(sdk.read_bytes(), b'untouched SDK')
+
+
+    def test_library_freeze_keeps_historical_sdk_and_copies_checked_bytes(self):
+        spec = importlib.util.spec_from_file_location('library_packager', ROOT / 'scripts/package-release.py')
+        packager = importlib.util.module_from_spec(spec);spec.loader.exec_module(packager)
+        historical=self.root/'dist.zip';historical.write_bytes(b'historical SDK')
+        folder=self.root/'build/candidate';folder.mkdir(parents=True)
+        sdk=folder/'dist.zip'
+        with zipfile.ZipFile(sdk,'w') as archive:archive.writestr('js/index.js',b'module.exports={};')
+        candidate=folder/'fixture-1.2.3.tgz'
+        files={'package.json':(self.root/'package.json').read_bytes(),'dist.zip':sdk.read_bytes()}
+        with tarfile.open(candidate,'w:gz') as archive:
+            for name,data in files.items():
+                member=tarfile.TarInfo('package/'+name);member.size=len(data);archive.addfile(member,io.BytesIO(data))
+        workflow.record_build(self.root,sdk)
+        target=packager.package(self.root,sdk)
+        self.assertEqual(target.read_bytes(),candidate.read_bytes())
+        self.assertEqual((self.root/'releases/fixture-1.2.3-sdk.zip').read_bytes(),sdk.read_bytes())
+        self.assertEqual(historical.read_bytes(),b'historical SDK')
+        self.assertTrue((self.root/'releases/SHA256SUMS-1.2.3.txt').is_file())
+        with self.assertRaisesRegex(ValueError,'Frozen library version'):packager.package(self.root,sdk)
 
 
 if __name__ == '__main__':

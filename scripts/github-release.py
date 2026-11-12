@@ -140,7 +140,8 @@ def checksum_map(content, asset_paths, checksums_path):
 def validate_artifacts(root, config, commit, package, assets):
     """Validate this library’s npm/SDK package against its release source."""
     packed = [data for path, data in assets.items() if path.endswith(".tgz")]
-    require(len(packed) == 1 and "dist.zip" in assets, "Expected one Library tarball and dist.zip")
+    sdk_path=expand(config.get("sdk_archive", "dist.zip"),package)
+    require(len(packed) == 1 and sdk_path in assets, "Expected one Library tarball and its SDK archive")
     with tarfile.open(fileobj=io.BytesIO(packed[0]), mode="r:gz") as archive:
         members = archive.getmembers()
         require(
@@ -154,7 +155,7 @@ def validate_artifacts(root, config, commit, package, assets):
             safe_path(member.name[8:]): archive.extractfile(member).read() for member in members
         }
     require(
-        files.get("dist.zip") == assets["dist.zip"], "Library tarball contains another SDK package"
+        files.get("dist.zip") == assets[sdk_path], "Library tarball contains another SDK package"
     )
     require(
         json.loads(files["package.json"])["version"] == package["version"],
@@ -167,7 +168,7 @@ def validate_artifacts(root, config, commit, package, assets):
     for path in names:
         if path.startswith(("src/", "include/")):
             require(path in files, "Library tarball omits source: " + path)
-    sdk = zip_files(assets["dist.zip"])
+    sdk = zip_files(assets[sdk_path])
     for path, content in files.items():
         if path.startswith("src/js/"):
             require(sdk.get("js/" + path[7:]) == content, "SDK JavaScript differs: " + path)

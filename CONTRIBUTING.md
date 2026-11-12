@@ -58,3 +58,16 @@ and safe reruns. Finish authorized work in reviewable local commits; pushing or 
 needs explicit scope.
 
 [History index](docs/history/index.md).
+
+
+## Pinned native build checks
+
+The native CI job uses Node/Python version files, `requirements-release.txt`,
+`.github/sdk-lock.json` and the SDK npm lock to build every declared platform.
+It downloads verified SDK 4.44 and matching Linux x86_64 toolchain archives into
+ignored `.build-tools/`. It does not log in, upload, publish or deploy.
+`python scripts/bootstrap-sdk.py --verify-only /path/to/SDKs/4.44` checks an
+existing installation without changing it. A new isolated installation needs
+a local venv with `requirements-release.txt` and its `bin` directory on PATH;
+set `XDG_DATA_HOME` to this checkout's `.build-tools/data` for subsequent builds.
+Historical root `dist.zip` files and released versions remain unchanged.

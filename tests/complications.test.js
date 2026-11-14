@@ -41,7 +41,7 @@ function fixture(overrides={}) {
   const deliveries=[];
   const callbacks=[];
   const logs=[];
-  const settings={language:'en',use12Hour:false};
+  const settings=Object.assign({language:'en',use12Hour:false},overrides.settings);
   const pebble={subscribeToSource:request=>{
     const handle={request,closed:false,unsubscribe(){this.closed=true;}};
     subscriptions.push(handle);
@@ -793,4 +793,35 @@ test('Public label hooks never request or receive private music/notification sou
     assert.ok(!JSON.stringify([...f.values.values()]).includes('Private source name'));
     assert.ok(!JSON.stringify([...f.values.values()]).includes('Must never appear'));
   }
+});
+
+
+test('Opt-in five slots preserve global indices, expiry, privacy and reversible two-slot mode',()=>{
+  const f=fixture({settings:{complicationSlotCount:5}});f.client.refresh();
+  const prefs=Array.from({length:5},(_,i)=>preference(i,'test','reading',i));
+  f.prefs(prefs);
+  f.source({validUntilMs:NOW+10000,instances:Array.from({length:5},(_,i)=>({properties:{value:{shortText:{text:'slot-'+i}}}}))});
+  assert.deepEqual(f.packet().map(s=>s.text),['slot-0','slot-1','slot-2','slot-3','slot-4']);
+  assert.equal(f.client.status().slots.length,5);
+  assert.ok(JSON.parse(f.values.get('watchface-core-complications-v1')).signature.startsWith('five:'));
+  f.settings.complicationSlotCount=2;f.client.configure();f.prefs(prefs);
+  assert.equal(f.client.status().slots.length,2);
+  assert.deepEqual(f.packet().map(s=>s.status),[1,1,0,0,0]);
+  f.settings.complicationSlotCount=5;f.client.configure();f.prefs(prefs);
+  f.source({validUntilMs:NOW+1000,instances:Array.from({length:5},()=>({properties:{value:{shortText:{text:'fresh'}}}}))});
+  f.tick(1001);assert.ok(f.packet().every(s=>s.status===7));
+  f.prefs([preference(4,'notifications','latest')]);
+  f.source(envelope({shortText:{text:'private'}}),'notifications','latest');
+  assert.ok(!JSON.stringify([...f.values]).includes('private'));
+});
+
+test('changing a private slot replaces its subscription even though cache identity is redacted',()=>{
+  const f=fixture({settings:{complicationSlotCount:5}});f.client.refresh();
+  f.prefs([preference(4,'music','track',0,'title')]);
+  const original=f.subscriptions.find(s=>s.request.category==='music');assert.ok(original);
+  f.prefs([preference(4,'music','track',0,'artist')]);
+  assert.equal(original.closed,true);
+  const current=f.subscriptions.filter(s=>!s.closed&&s.request.category==='music').at(-1);
+  assert.ok(current.request.properties.includes('artist'));
+  assert.equal(JSON.parse([...f.values.values()][0]).records[4],null);
 });

@@ -9,7 +9,7 @@ pins are independent; history is not a second active specification.
 
 ## Important boundaries
 
-This is an embedded library, not an installed service. Hosts own SDK callbacks, timers, persistence keys, UI, permissions, vibration and Quiet Time. Keep the two-reading/five-record bounds and strict v1–v4 compatibility. Receipt time is not observation time; cache restore never renews a lease. Media/notification text must never reach persistence or logs. Baselines prevent alert-history replay. Consumer pins and app releases advance independently.
+This is an embedded library, not an installed service. Hosts own SDK callbacks, timers, persistence keys, UI, permissions, vibration and Quiet Time. Keep default two-reading behaviour, opt-in five-slot coordination and the five-record bounds and strict v1–v4 compatibility. Receipt time is not observation time; cache restore never renews a lease. Media/notification text must never reach persistence or logs. Baselines prevent alert-history replay. Consumer pins and app releases advance independently.
 
 ## Read only what the task needs
 

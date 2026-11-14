@@ -7,7 +7,7 @@ var DEFAULT_CACHE_KEY = 'watchface-core-complications-v1';
 var REFRESH = 30 * 60000;
 var MAX_AGE = 7200;
 var MAX_EPOCH = 4294967295;
-var VISIBLE_SLOTS = 2;
+
 
 function object(value) { return value && typeof value === 'object' && !Array.isArray(value); }
 function finite(value) { return typeof value === 'number' && isFinite(value); }
@@ -216,13 +216,17 @@ module.exports = function(options) {
   var cacheKey = typeof options.cacheKey === 'string' && options.cacheKey.length
       ? options.cacheKey : DEFAULT_CACHE_KEY;
   var pebble = options.pebble || {};
-  var descriptors = [null,null];
-  var records = [null,null];
-  var identities = [null,null];
-  var states = [0,0];
-  var errors = ['',''];
-  var messages = ['',''];
-  var fromCache = [false,false];
+  function requestedSlots() { return options.getSettings().complicationSlotCount === 5 ? 5 : 2; }
+  var slotCount = requestedSlots();
+  function filled(value) { return Array.from({length:slotCount},function(){return value;}); }
+  function cacheSignature(slots) { return persistentSignature(slots, slotCount === 5 ? 'five:' : 'two:'); }
+  var descriptors = filled(null);
+  var records = filled(null);
+  var identities = filled(null);
+  var states = filled(0);
+  var errors = filled('');
+  var messages = filled('');
+  var fromCache = filled(false);
   var hasPreferences = false;
   var signature = '';
   var preferenceGeneration = 0;
@@ -267,7 +271,7 @@ module.exports = function(options) {
     var cacheable=records.map(function(record,i) {
       return privateDescriptor(descriptors[i]) || privateRecord(record) ? null : record;
     });
-    try { options.storage.setItem(cacheKey, JSON.stringify({signature:persistentSignature(descriptors), records:cacheable})); } catch (ignored) {}
+    try { options.storage.setItem(cacheKey, JSON.stringify({signature:cacheSignature(descriptors), records:cacheable})); } catch (ignored) {}
   }
   function sanitizeStoredCache() {
     try {
@@ -275,7 +279,7 @@ module.exports = function(options) {
       if (!cached || !Array.isArray(cached.records)) { return; }
       var encoded=typeof cached.signature === 'string' ? cached.signature : '';
       var choices;
-      try { choices=JSON.parse(encoded.indexOf('two:') === 0 ? encoded.slice(4) : encoded); } catch (ignored) {}
+      try { choices=JSON.parse(/^(two|five):/.test(encoded) ? encoded.slice(encoded.indexOf(':')+1) : encoded); } catch (ignored) {}
       var changed=false;
       var safe=cached.records.map(function(record,i) {
         // Legacy cache descriptors still identify music and notification data.
@@ -286,7 +290,7 @@ module.exports = function(options) {
         }
         return record;
       });
-      var safeSignature=Array.isArray(choices) ? persistentSignature(choices,encoded.indexOf('two:') === 0 ? 'two:' : '') : cached.signature;
+      var safeSignature=Array.isArray(choices) ? persistentSignature(choices,encoded.indexOf('five:') === 0 ? 'five:' : encoded.indexOf('two:') === 0 ? 'two:' : '') : cached.signature;
       if (safeSignature !== cached.signature) { changed=true; }
       if (changed) { options.storage.setItem(cacheKey,JSON.stringify({signature:safeSignature,records:safe})); }
     } catch (ignored) {}
@@ -294,7 +298,7 @@ module.exports = function(options) {
   function load() {
     try {
       var cached = JSON.parse(options.storage.getItem(cacheKey));
-      if (!cached || cached.signature !== persistentSignature(descriptors) || !Array.isArray(cached.records) || cached.records.length !== VISIBLE_SLOTS) { return; }
+      if (!cached || cached.signature !== cacheSignature(descriptors) || !Array.isArray(cached.records) || cached.records.length !== slotCount) { return; }
       cached.records.forEach(function(record, i) {
         if (descriptors[i] && !descriptors[i].invalid && !privateDescriptor(descriptors[i]) && !privateRecord(record) && valid(record) &&
             wire.packComplications([rendered(record)], now())[7] === STATUS.READY) {
@@ -500,10 +504,10 @@ module.exports = function(options) {
   }
   function preferred(envelope) {
     if (!envelope || !Array.isArray(envelope.instances)) { preferenceError = 'INVALID_DATA'; preferenceMessage = ''; return; }
-    var next = [null,null];
+    var next = filled(null);
     var seen = {};
     envelope.instances.forEach(function(instance) {
-      if (!instance || !/^[01]$/.test(instance.instanceId) || typeof instance.instanceId !== 'string') { return; }
+      if (!instance || !/^[0-4]$/.test(instance.instanceId) || Number(instance.instanceId) >= slotCount || typeof instance.instanceId !== 'string') { return; }
       var i = Number(instance.instanceId);
       var p = instance.properties || {};
       var slot = {category:textOf(p.category),item:textOf(p.item),property:textOf(p.property),
@@ -516,19 +520,21 @@ module.exports = function(options) {
     });
     // The namespace also rejects old five-slot cache records, even if their
     // first two descriptors happen to match the new face's two choices.
-    var nextSignature = 'two:' + JSON.stringify(next);
+    // Live subscription identity includes private choices; only the persisted
+    // cache signature redacts them.
+    var nextSignature = (slotCount === 5 ? 'five:' : 'two:') + JSON.stringify(next);
     preferenceError = '';
     preferenceMessage = '';
     if (hasPreferences && nextSignature === signature) { return; }
     var first = !hasPreferences;
     cancelRecovery(); closeSources(); cancelDelivery();
     descriptors = next; signature = nextSignature; hasPreferences = true;
-    records = [null,null];
+    records = filled(null);
     identities=descriptors.map(function(slot) { return publicIdentity(slot); });
-    fromCache = [false,false];
+    fromCache = filled(false);
     states = descriptors.map(function(slot) { return !slot ? STATUS.EMPTY : slot.invalid ? STATUS.UNSUPPORTED : STATUS.LOADING; });
     errors = descriptors.map(function(slot) { return slot && slot.invalid ? 'INVALID_PREFERENCE' : ''; });
-    messages = ['',''];
+    messages = filled('');
     if (first) { load(); }
     publish(); save(); scheduleExpiry(); sources();
   }
@@ -540,9 +546,9 @@ module.exports = function(options) {
       preferenceGeneration++;
       try { if (preferenceSubscription && preferenceSubscription.unsubscribe) { preferenceSubscription.unsubscribe(); } } catch (ignored) {}
       preferenceSubscription = null;
-      closeSources(); cancelDelivery(); states = [3,3]; records = [null,null]; fromCache = [false,false];
-      errors = ['API_UNAVAILABLE','API_UNAVAILABLE'];
-      messages = ['',''];
+      closeSources(); cancelDelivery(); states = filled(3); records = filled(null); fromCache = filled(false);
+      errors = filled('API_UNAVAILABLE');
+      messages = filled('');
       preferenceError = 'API_UNAVAILABLE'; preferenceMessage = ''; publish(); return;
     }
     var privateCleared=false;
@@ -576,7 +582,15 @@ module.exports = function(options) {
     refreshTimer = options.later(function() { refreshTimer = null; refresh(); }, REFRESH);
   }
   sanitizeStoredCache();
-  return {refresh:refresh,configure:function() { publish(); scheduleExpiry(); },status:function() {
+  return {refresh:refresh,configure:function() {
+    var requested = requestedSlots();
+    if (requested !== slotCount) {
+      closeSources(); cancelDelivery(); cancelRecovery();
+      slotCount = requested; descriptors = filled(null); records = filled(null); identities = filled(null);
+      states = filled(STATUS.EMPTY); errors = filled(''); messages = filled(''); fromCache = filled(false);
+      publish(); hasPreferences = false; signature = ''; refresh();
+    } else { publish(); scheduleExpiry(); }
+  },status:function() {
     var firstError = -1;
     for (var i = 0; i < errors.length; i++) { if (errors[i]) { firstError = i; break; } }
     return {available:available,configured:descriptors.filter(function(slot) { return slot; }).length,

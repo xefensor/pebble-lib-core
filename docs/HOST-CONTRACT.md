@@ -1,4 +1,12 @@
-# Host contract — 0.5.2-dev.0 local candidate
+# Host contract
+
+## Optional reading pages — 0.6.1-dev.0 local candidate
+
+`createComplications` reads `getSettings().complicationSlotCount`: `5` opts into all five global slots; other values retain the default two-slot behaviour. Call `configure()` after changing this choice. Old subscriptions and delivery generations are cancelled; five-slot caches use a separate `five:` identity while `two:` stays unchanged. Global slot identity, permissions, original expiry and private-data exclusions remain authoritative.
+
+The existing five-record wire format and native `WfcReadings` support this mode. The host owns visible pairs and user-triggered paging, without refreshing sources on each gesture. Other consumers retain their current pins.
+
+## Earlier additive interfaces
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.

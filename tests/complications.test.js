@@ -825,3 +825,24 @@ test('changing a private slot replaces its subscription even though cache identi
   assert.ok(current.request.properties.includes('artist'));
   assert.equal(JSON.parse([...f.values.values()][0]).records[4],null);
 });
+
+
+test('Four-slot layouts subscribe only to the first four and keep separate cache identity',()=>{
+  const f=fixture({settings:{complicationSlotCount:4}});f.client.refresh();
+  const prefs=Array.from({length:5},(_,i)=>preference(i,'test','slot'+i));f.prefs(prefs);
+  assert.deepEqual(f.subscriptions.filter(s=>!s.closed&&s.request.category==='test').map(s=>s.request.item),['slot0','slot1','slot2','slot3']);
+  for(let i=0;i<4;i++)f.source(envelope({shortText:{text:'value'+i}}),'test','slot'+i);
+  assert.deepEqual(f.packet().map(s=>s.text),['value0','value1','value2','value3','']);
+  const stored=JSON.parse(f.values.get('watchface-core-complications-v1'));
+  assert.ok(stored.signature.startsWith('four:'));assert.equal(stored.records.length,4);
+  f.restart();f.client.refresh();f.prefs(prefs);
+  assert.deepEqual(f.packet().slice(0,4).map(s=>s.text),['value0','value1','value2','value3']);
+  assert.equal(f.packet()[0].validUntil,stored.records[0].validUntil);
+  f.settings.complicationSlotCount=5;f.client.configure();f.prefs(prefs);
+  assert.deepEqual(f.packet().map(s=>s.status),[1,1,1,1,1]);
+  f.settings.complicationSlotCount=4;f.client.configure();f.prefs([preference(3,'notifications','latest')]);
+  f.source(envelope({shortText:{text:'four-private-body'}}),'notifications','latest');
+  assert.ok(!JSON.stringify([...f.values]).includes('four-private-body'));
+  f.settings.complicationSlotCount=3;f.client.configure();f.prefs(prefs);
+  assert.equal(f.client.status().slots.length,2);
+});

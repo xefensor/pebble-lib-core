@@ -216,10 +216,11 @@ module.exports = function(options) {
   var cacheKey = typeof options.cacheKey === 'string' && options.cacheKey.length
       ? options.cacheKey : DEFAULT_CACHE_KEY;
   var pebble = options.pebble || {};
-  function requestedSlots() { return options.getSettings().complicationSlotCount === 5 ? 5 : 2; }
+  function requestedSlots() { var count=options.getSettings().complicationSlotCount; return count === 4 || count === 5 ? count : 2; }
   var slotCount = requestedSlots();
   function filled(value) { return Array.from({length:slotCount},function(){return value;}); }
-  function cacheSignature(slots) { return persistentSignature(slots, slotCount === 5 ? 'five:' : 'two:'); }
+  function slotNamespace() { return slotCount === 5 ? 'five:' : slotCount === 4 ? 'four:' : 'two:'; }
+  function cacheSignature(slots) { return persistentSignature(slots, slotNamespace()); }
   var descriptors = filled(null);
   var records = filled(null);
   var identities = filled(null);
@@ -279,7 +280,7 @@ module.exports = function(options) {
       if (!cached || !Array.isArray(cached.records)) { return; }
       var encoded=typeof cached.signature === 'string' ? cached.signature : '';
       var choices;
-      try { choices=JSON.parse(/^(two|five):/.test(encoded) ? encoded.slice(encoded.indexOf(':')+1) : encoded); } catch (ignored) {}
+      try { choices=JSON.parse(/^(two|four|five):/.test(encoded) ? encoded.slice(encoded.indexOf(':')+1) : encoded); } catch (ignored) {}
       var changed=false;
       var safe=cached.records.map(function(record,i) {
         // Legacy cache descriptors still identify music and notification data.
@@ -290,7 +291,7 @@ module.exports = function(options) {
         }
         return record;
       });
-      var safeSignature=Array.isArray(choices) ? persistentSignature(choices,encoded.indexOf('five:') === 0 ? 'five:' : encoded.indexOf('two:') === 0 ? 'two:' : '') : cached.signature;
+      var safeSignature=Array.isArray(choices) ? persistentSignature(choices,encoded.indexOf('five:') === 0 ? 'five:' : encoded.indexOf('four:') === 0 ? 'four:' : encoded.indexOf('two:') === 0 ? 'two:' : '') : cached.signature;
       if (safeSignature !== cached.signature) { changed=true; }
       if (changed) { options.storage.setItem(cacheKey,JSON.stringify({signature:safeSignature,records:safe})); }
     } catch (ignored) {}
@@ -522,7 +523,7 @@ module.exports = function(options) {
     // first two descriptors happen to match the new face's two choices.
     // Live subscription identity includes private choices; only the persisted
     // cache signature redacts them.
-    var nextSignature = (slotCount === 5 ? 'five:' : 'two:') + JSON.stringify(next);
+    var nextSignature = slotNamespace() + JSON.stringify(next);
     preferenceError = '';
     preferenceMessage = '';
     if (hasPreferences && nextSignature === signature) { return; }

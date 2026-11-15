@@ -322,6 +322,22 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Stale package input"):
             self.prepared()
 
+    def test_package_checks_shipped_root_exports_and_documentation(self):
+        with tarfile.open(self.root / "releases/fixture-1.2.3.tgz") as archive:
+            files = {member.name[8:]: archive.extractfile(member).read() for member in archive.getmembers()}
+        for name in ('readings.js', 'README.md'):
+            with self.subTest(path=name):
+                self.write(name, b"final committed content")
+                commit = self.commit()
+                assets = {
+                    "dist.zip": files["dist.zip"],
+                    "releases/fixture-1.2.3.tgz": tar_bytes({**files, name: b"stale packed content"}),
+                }
+                with self.assertRaisesRegex(ValueError, "Stale package input"):
+                    release.validate_artifacts(self.root, self.config, commit, self.package, assets)
+                assets["releases/fixture-1.2.3.tgz"] = tar_bytes({**files, name: b"final committed content"})
+                release.validate_artifacts(self.root, self.config, commit, self.package, assets)
+
     def test_package_rejects_stale_exported_header(self):
         with tarfile.open(self.root / "releases/fixture-1.2.3.tgz") as archive:
             files = {
@@ -334,9 +350,13 @@ class ReleaseTests(unittest.TestCase):
                 "include/fixture-library/core.h": b"stale exported header",
             }
         )
+        # Bind the SDK bytes to the commit so the exported-header audit, rather
+        # than the earlier stale-member check, must reject their contents.
+        self.write("dist.zip", files["dist.zip"])
+        commit = self.commit()
         assets = {"dist.zip": files["dist.zip"], "releases/fixture-1.2.3.tgz": tar_bytes(files)}
         with self.assertRaisesRegex(ValueError, "SDK exported header differs"):
-            release.validate_artifacts(self.root, self.config, self.original, self.package, assets)
+            release.validate_artifacts(self.root, self.config, commit, self.package, assets)
 
     def test_rc_and_beta_ids_are_distinct_and_validated(self):
         self.assertEqual(

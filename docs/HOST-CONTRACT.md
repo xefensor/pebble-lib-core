@@ -1,9 +1,9 @@
-# Host contract — 0.5.2-dev.0 local candidate
+# Host contract — published 0.5.2
 
 The core supplies state and decisions. A watchface supplies its platform APIs,
 persistence namespace, settings, drawing and event ownership.
 
-This contract describes the unpublished 0.5.2-dev.0 candidate, additive to 0.5.1
+This contract describes the published 0.5.2 library, additive to 0.5.1
 and including the legacy 0.4.1 context interface. See the [project README](../README.md)
 for package downloads, [release guide](GITHUB-RELEASES.md) for publishing, and
 [maintainer notes](../AGENTS.md) for validation and change boundaries. A new
@@ -36,7 +36,9 @@ registered by either entrypoint.
 
 Both native state types compile the same shared cache/freshness implementation.
 There is no cast between their different layouts or macro-dependent public
-layout. A consumer must still rebuild against its pinned 0.5.0 package.
+layout. A consumer must rebuild against its own pinned package when upgrading;
+the current standalone release is 0.5.2. Newer app-bundled snapshots do not
+change that release or automatically repin another consumer.
 
 ### Additional snapshot channels
 
